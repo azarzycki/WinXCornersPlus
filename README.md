@@ -17,7 +17,7 @@ WinXCornersPlus is a lightweight utility for Windows 10 and Windows 11 that enha
     - **Start Screen Saver**: Trigger your screen saver for privacy or energy-saving purposes.
     - **Task Manager**: Open Task Manager.
     - **Turn Display Off**: Turn off your display when not in use.
-    - **Custom**: Open other executables with command line params or custom hotkeys (sequence of key hold/release).
+    - **Custom Actions**: Open other executables with command line params or custom hotkeys (sequence of key hold/release).
 
 2. **Customization**: Tailor WinXCornersPlus to your preferences:
     - Assign specific actions to individual screen corners.
