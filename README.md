@@ -38,8 +38,6 @@ WinXCornersPlus is a lightweight utility for Windows 10 and Windows 11 that enha
 
 5. **Visible Countdown Counter**: Helps you, visually, to know if a corner action is about to be triggered.
 
-6. `[WIP]` **Windows 10/11 Theme aware**: Support for Windows 10 and 11 dark and light theme, so it will look like part of your OS.
-
 ## <a name="howto"></a> How To Use  <a href="#WinXCornersPlus"></a>
 1. Launch WinXCornersPlus popup window from the system tray icon.
 2. Configure your preferred actions for each corner.
