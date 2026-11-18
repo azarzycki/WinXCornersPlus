@@ -198,7 +198,8 @@ function New-StandardTestUser {
     <# Creates a local standard (non-administrator) user with a random password; returns its credential. #>
     [CmdletBinding()]
     param([Parameter(Mandatory)] [ValidatePattern('\A[a-z0-9]{3,20}\z')] [string] $Name)
-    $password = 'Wx1!' + [guid]::NewGuid().ToString('N') + 'z#Q'
+    # 14 characters: net.exe asks an interactive question for longer passwords. Random, and meets complexity rules.
+    $password = 'Wx1!' + [guid]::NewGuid().ToString('N').Substring(0, 10)
     & net.exe user $Name $password /add /expires:never /comment:"WinXCornersPlus release test" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Could not create the local test user $Name (net user exit code $LASTEXITCODE)." }
     # Lets this elevated script read the exit code and modules of that user's processes.
