@@ -1,0 +1,251 @@
+# Release pipeline. See docs/RELEASING.md.
+#
+# push to master (app sources)  -> real release: tag v<version> + GitHub Release with zip, SHA256SUMS.txt
+#                                   and a build-provenance attestation.
+# push to hardening/**          -> dry run: everything except the attestation, the tag and the release.
+# workflow_dispatch             -> choose the bump, prerelease and dry run; only master can really release.
+#
+# Version = git tags + commit messages + the csproj <Version> floor (build/release/ReleaseTools.psm1).
+# Nothing is ever committed back, so this workflow cannot trigger itself.
+name: Release
+
+on:
+  push:
+    branches: [master, 'hardening/**']
+    paths:
+      - 'src/**'
+      - 'Directory.Build.props'
+      - 'build/release/**'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump (auto = from commit messages)'
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      prerelease:
+        description: 'Publish as a prerelease (X.Y.Z-rc.<run number>)'
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run: build and package only, do not tag or publish'
+        type: boolean
+        default: true
+
+# Every job asks for exactly what it needs.
+permissions: {}
+
+# One release at a time per branch; a running release is never cancelled (a newer push waits).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  PROJECT: src/WinXCorners.App/WinXCorners.App.csproj
+
+jobs:
+  script-tests:
+    name: Release script tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pester
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable Pester | Where-Object Version -ge ([version]'5.0.0'))) {
+            Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck
+          }
+          Import-Module Pester -MinimumVersion 5.0.0
+          Write-Host "Pester $((Get-Module Pester).Version) on PowerShell $($PSVersionTable.PSVersion)"
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'build/release'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config
+
+  gate:
+    name: Gate
+    needs: script-tests
+    permissions:
+      contents: read
+    # The full CI pipeline (Core tests + coverage on two OSes, app build). A release never ships if it fails.
+    uses: ./.github/workflows/ci.yml
+
+  version:
+    name: Compute version
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      tag: ${{ steps.compute.outputs.tag }}
+      numeric_version: ${{ steps.compute.outputs.numeric_version }}
+      prerelease: ${{ steps.compute.outputs.prerelease }}
+      dry_run: ${{ steps.compute.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # all history and tags: the version is derived from them
+          persist-credentials: false
+      - name: Compute next version
+        id: compute
+        shell: pwsh
+        # Inputs reach the script only through env, never through ${{ }} inside the script text.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module ./build/release/ReleaseTools.psm1
+          $real = Test-IsRealRelease -EventName $env:EVENT_NAME -Ref $env:GIT_REF -DryRunInput $env:INPUT_DRY_RUN
+          $dryRun = (-not $real).ToString().ToLowerInvariant()
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "dry_run=$dryRun"
+          $mode = if ($real) { '**Real release**: tag and GitHub Release will be created.' } else { '**Dry run**: nothing will be tagged or published.' }
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $mode, ''
+          ./build/release/Get-ReleaseVersion.ps1 -ProjectFile $env:PROJECT -Bump $env:INPUT_BUMP `
+            -Prerelease:($env:INPUT_PRERELEASE -eq 'true') -RunNumber ([int] $env:RUN_NUMBER)
+
+  package:
+    name: Package (win-x64)
+    needs: version
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          NUMERIC_VERSION: ${{ needs.version.outputs.numeric_version }}
+        # All four version properties are stamped here, so the csproj may carry either a single
+        # <Version> or the old explicit Assembly/File/InformationalVersion: the command line wins.
+        run: |
+          dotnet publish src/WinXCorners.App -c Release -r win-x64 --self-contained false -o publish `
+            "-p:Version=$env:VERSION" "-p:AssemblyVersion=$env:NUMERIC_VERSION" `
+            "-p:FileVersion=$env:NUMERIC_VERSION" "-p:InformationalVersion=$env:VERSION" `
+            -p:ContinuousIntegrationBuild=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify version stamp, zip and checksum
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          NUMERIC_VERSION: ${{ needs.version.outputs.numeric_version }}
+        run: ./build/release/New-ReleasePackage.ps1 -PublishDirectory publish -OutputDirectory dist -Version $env:VERSION -NumericVersion $env:NUMERIC_VERSION
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: WinXCornersPlus-${{ needs.version.outputs.version }}-win-x64
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: ${{ needs.version.outputs.dry_run == 'true' && 14 || 90 }}
+
+  notes:
+    name: Check artifact and write release notes
+    needs: [version, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Same download the publish job does, so a dry run proves the hand-over works.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: WinXCornersPlus-${{ needs.version.outputs.version }}-win-x64
+          path: dist
+      - name: Verify checksums and write notes
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./build/release/Confirm-ReleaseChecksums.ps1 -Directory dist
+          ./build/release/New-ReleaseNotes.ps1 -Directory dist -Version $env:VERSION -Repository $env:REPOSITORY `
+            -OutputFile release-notes.md -Prerelease:($env:PRERELEASE -eq 'true')
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value '## Release notes preview', '', (Get-Content -Raw release-notes.md)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: [version, package, notes]
+    if: needs.version.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write     # create the tag and the release
+      id-token: write     # sign the provenance attestation (Sigstore)
+      attestations: write # store the attestation
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: WinXCornersPlus-${{ needs.version.outputs.version }}-win-x64
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: notes
+      - name: Verify checksums
+        working-directory: dist
+        run: sha256sum --check --strict SHA256SUMS.txt
+      - name: Refuse an existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent 2>err.txt; then
+            echo "::error::Tag $TAG already exists; nothing was published."; exit 1
+          fi
+          grep -q 'HTTP 404' err.txt || { cat err.txt; exit 1; }
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.zip
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          # --target creates the tag on exactly the commit that was built and tested.
+          gh release create "$TAG" dist/*.zip dist/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "WinXCornersPlus $VERSION" --notes-file notes/release-notes.md --generate-notes \
+            "${flags[@]}"
