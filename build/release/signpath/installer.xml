@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for the release workflow's "Code signing - installer" job
+  (repository variable SIGNPATH_INSTALLER_ARTIFACT_CONFIGURATION_SLUG). The job submits the GitHub artifact
+  unsigned-installer-<arch>: one WinXCornersPlus-<version>-<arch>.msi at the root, built from program files that
+  were already signed by the first job. Check it against SignPath's documentation when setting the project up.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <msi-file-set>
+      <include path="WinXCornersPlus-*.msi" min-matches="1" max-matches="1" />
+      <for-each>
+        <authenticode-sign />
+      </for-each>
+    </msi-file-set>
+  </zip-file>
+</artifact-configuration>

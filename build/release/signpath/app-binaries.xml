@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for the release workflow's "Code signing - program files" job
+  (repository variable SIGNPATH_APP_ARTIFACT_CONFIGURATION_SLUG). The job submits the GitHub artifact
+  unsigned-app-<arch>: the published app (WinXCornersPlus.exe, its DLLs, .json files, LICENSE.txt) at the root.
+  Every .exe and .dll is Authenticode-signed; nothing else is touched. Paste it into the SignPath project as an
+  artifact configuration and check it against SignPath's documentation when setting the project up.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file-set>
+      <include path="*.exe" min-matches="1" max-matches="unbounded" />
+      <include path="*.dll" min-matches="2" max-matches="unbounded" />
+      <for-each>
+        <authenticode-sign />
+      </for-each>
+    </pe-file-set>
+  </zip-file>
+</artifact-configuration>

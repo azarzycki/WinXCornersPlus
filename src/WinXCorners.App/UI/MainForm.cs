@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using WinXCorners.Core.Model;
+using WinXCorners.Core.Platform;
 using WinXCorners.Core.Security;
 
 namespace WinXCorners.App;
@@ -291,8 +292,19 @@ internal sealed class MainForm : Form
                 RefreshTheme();
                 break;
             case WmQueryEndSession:
-            case WmEndSession when m.WParam != IntPtr.Zero:
-                FlushSettings();
+            case WmEndSession:
+                // Log-off, shutdown, or an installer / the Restart Manager closing the app for an upgrade or uninstall
+                // (docs/INSTALLING.md). Exiting here is the clean path: settings saved, tray icon removed.
+                switch (SessionEndPolicy.Decide(m.Msg, (long)m.WParam))
+                {
+                    case SessionEndResponse.SaveSettings:
+                        FlushSettings();
+                        break;
+                    case SessionEndResponse.Exit:
+                        Shutdown();
+                        break;
+                }
+
                 break;
         }
 

@@ -246,20 +246,118 @@ Describe 'Get-NextReleaseVersion' {
 }
 
 Describe 'Test-IsRealRelease' {
-    It 'is <Expected> for <EventName> on <Ref> (dry_run=<DryRun>)' -ForEach @(
-        @{ EventName = 'push'; Ref = 'refs/heads/master'; DryRun = ''; Expected = $true }
-        @{ EventName = 'workflow_dispatch'; Ref = 'refs/heads/master'; DryRun = 'false'; Expected = $true }
-        @{ EventName = 'workflow_dispatch'; Ref = 'refs/heads/master'; DryRun = 'true'; Expected = $false }
-        @{ EventName = 'workflow_dispatch'; Ref = 'refs/heads/master'; DryRun = ''; Expected = $false }
-        @{ EventName = 'workflow_dispatch'; Ref = 'refs/heads/hardening/x'; DryRun = 'false'; Expected = $false }
-        @{ EventName = 'push'; Ref = 'refs/heads/hardening/release-pipeline'; DryRun = ''; Expected = $false }
-        @{ EventName = 'push'; Ref = 'refs/heads/master-old'; DryRun = ''; Expected = $false }
-        @{ EventName = 'push'; Ref = 'refs/tags/v1.5.0'; DryRun = ''; Expected = $false }
-        @{ EventName = 'pull_request'; Ref = 'refs/heads/master'; DryRun = ''; Expected = $false }
-        @{ EventName = 'push'; Ref = 'refs/heads/Master'; DryRun = ''; Expected = $false }
-        @{ EventName = ''; Ref = ''; DryRun = ''; Expected = $false }
+    It 'is <Expected> for <EventName> on <Ref> (dry_run=<DryRun>, RELEASE_ON_PUSH=<OnPush>)' -ForEach @(
+        @{ EventName = 'push'; Ref = 'refs/heads/master'; DryRun = ''; OnPush = 'true'; Expected = $true }
+        @{ EventName = 'push'; Ref = 'refs/heads/master'; DryRun = ''; OnPush = ''; Expected = $false }
+        @{ EventName = 'push'; Ref = 'refs/heads/master'; DryRun = ''; OnPush = 'false'; Expected = $false }
+        @{ EventName = 'push'; Ref = 'refs/heads/master'; DryRun = ''; OnPush = 'True'; Expected = $false }
+        @{ EventName = 'push'; Ref = 'refs/heads/master'; DryRun = ''; OnPush = ' true'; Expected = $false }
+        @{ EventName = 'push'; Ref = 'refs/heads/master'; DryRun = ''; OnPush = '1'; Expected = $false }
+        @{ EventName = 'push'; Ref = 'refs/heads/master'; DryRun = 'false'; OnPush = ''; Expected = $false }
+        @{ EventName = 'workflow_dispatch'; Ref = 'refs/heads/master'; DryRun = 'false'; OnPush = ''; Expected = $true }
+        @{ EventName = 'workflow_dispatch'; Ref = 'refs/heads/master'; DryRun = 'true'; OnPush = 'true'; Expected = $false }
+        @{ EventName = 'workflow_dispatch'; Ref = 'refs/heads/master'; DryRun = ''; OnPush = 'true'; Expected = $false }
+        @{ EventName = 'workflow_dispatch'; Ref = 'refs/heads/hardening/x'; DryRun = 'false'; OnPush = 'true'; Expected = $false }
+        @{ EventName = 'push'; Ref = 'refs/heads/hardening/release-pipeline'; DryRun = ''; OnPush = 'true'; Expected = $false }
+        @{ EventName = 'push'; Ref = 'refs/heads/master-old'; DryRun = ''; OnPush = 'true'; Expected = $false }
+        @{ EventName = 'push'; Ref = 'refs/tags/v1.5.0'; DryRun = ''; OnPush = 'true'; Expected = $false }
+        @{ EventName = 'pull_request'; Ref = 'refs/heads/master'; DryRun = 'false'; OnPush = 'true'; Expected = $false }
+        @{ EventName = 'push'; Ref = 'refs/heads/Master'; DryRun = ''; OnPush = 'true'; Expected = $false }
+        @{ EventName = ''; Ref = ''; DryRun = ''; OnPush = ''; Expected = $false }
     ) {
-        Test-IsRealRelease -EventName $EventName -Ref $Ref -DryRunInput $DryRun | Should -Be $Expected
+        Test-IsRealRelease -EventName $EventName -Ref $Ref -DryRunInput $DryRun -ReleaseOnPush $OnPush | Should -Be $Expected
+    }
+}
+
+Describe 'Get-CodeSigningPlan' {
+    BeforeAll {
+        $script:signPath = @('SIGNPATH_ORGANIZATION_ID', 'SIGNPATH_PROJECT_SLUG', 'SIGNPATH_SIGNING_POLICY_SLUG',
+            'SIGNPATH_APP_ARTIFACT_CONFIGURATION_SLUG', 'SIGNPATH_INSTALLER_ARTIFACT_CONFIGURATION_SLUG', 'SIGNPATH_API_TOKEN')
+        $script:azure = @('AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_SUBSCRIPTION_ID', 'AZURE_SIGNING_ENDPOINT',
+            'AZURE_SIGNING_ACCOUNT_NAME', 'AZURE_CERTIFICATE_PROFILE_NAME')
+    }
+
+    It 'does not sign when no provider is configured (<Provider>)' -ForEach @(@{ Provider = '' }, @{ Provider = $null }, @{ Provider = 'none' }) {
+        $plan = Get-CodeSigningPlan -Provider $Provider -Configured $signPath -IsRealRelease -EventName 'workflow_dispatch'
+        $plan.Provider | Should -Be 'none'
+        $plan.Note | Should -BeLike 'Not code-signed*'
+    }
+
+    It 'signs a real release with <Provider> when everything is configured' -ForEach @(
+        @{ Provider = 'signpath' }, @{ Provider = 'SignPath' }, @{ Provider = 'azure' }
+    ) {
+        $plan = Get-CodeSigningPlan -Provider $Provider -Configured ($signPath + $azure) -IsRealRelease -EventName 'push'
+        $plan.Provider | Should -Be $Provider.ToLowerInvariant()
+    }
+
+    It 'never signs a dry run, and says what a real release would still need' {
+        $plan = Get-CodeSigningPlan -Provider 'signpath' -Configured @('SIGNPATH_API_TOKEN') -EventName 'push'
+        $plan.Provider | Should -Be 'none'
+        $plan.Note | Should -BeLike '*dry run*SIGNPATH_ORGANIZATION_ID*'
+    }
+
+    It 'never signs for a pull request, even when told it is a real release' {
+        (Get-CodeSigningPlan -Provider 'azure' -Configured $azure -IsRealRelease -EventName 'pull_request').Provider | Should -Be 'none'
+        (Get-CodeSigningPlan -Provider 'azure' -Configured $azure -IsRealRelease -EventName 'pull_request_target').Provider | Should -Be 'none'
+    }
+
+    It 'fails a real release whose provider is only partly configured, naming what is missing' {
+        { Get-CodeSigningPlan -Provider 'azure' -Configured ($azure | Select-Object -Skip 1) -IsRealRelease -EventName 'push' } |
+            Should -Throw '*AZURE_TENANT_ID*'
+        { Get-CodeSigningPlan -Provider 'signpath' -Configured $azure -IsRealRelease -EventName 'push' } | Should -Throw '*SIGNPATH_API_TOKEN*'
+    }
+
+    It 'rejects an unknown provider' {
+        { Get-CodeSigningPlan -Provider 'digicert' -Configured @() -IsRealRelease } | Should -Throw '*signpath*azure*'
+    }
+}
+
+Describe 'Get-ReleaseAssetName and ConvertTo-MsiProductVersion' {
+    It 'names <Kind> for <Arch>' -ForEach @(
+        @{ Kind = 'zip'; Arch = 'x64'; Expected = 'WinXCornersPlus-1.5.0-win-x64.zip' }
+        @{ Kind = 'zip'; Arch = 'arm64'; Expected = 'WinXCornersPlus-1.5.0-win-arm64.zip' }
+        @{ Kind = 'msi'; Arch = 'x64'; Expected = 'WinXCornersPlus-1.5.0-x64.msi' }
+        @{ Kind = 'msi'; Arch = 'arm64'; Expected = 'WinXCornersPlus-1.5.0-arm64.msi' }
+    ) {
+        Get-ReleaseAssetName -Kind $Kind -Architecture $Arch -Version '1.5.0' | Should -BeExactly $Expected
+    }
+
+    It 'rejects x86 and odd versions' {
+        { Get-ReleaseAssetName -Kind zip -Architecture x86 -Version '1.5.0' } | Should -Throw
+        { Get-ReleaseAssetName -Kind zip -Architecture x64 -Version '1.5' } | Should -Throw
+        { Get-ReleaseAssetName -Kind msi -Architecture x64 -Version '../1.5.0' } | Should -Throw
+    }
+
+    It 'maps <Version> to MSI version <Expected>' -ForEach @(
+        @{ Version = '1.5.0'; Expected = '1.5.0' }
+        @{ Version = '1.6.0-rc.12'; Expected = '1.6.0' }
+        @{ Version = '255.255.65535'; Expected = '255.255.65535' }
+    ) {
+        ConvertTo-MsiProductVersion $Version | Should -BeExactly $Expected
+    }
+
+    It 'refuses <Version>, which Windows Installer cannot represent' -ForEach @(
+        @{ Version = '256.0.0' }, @{ Version = '1.256.0' }, @{ Version = '1.0.65536' }, @{ Version = '1.0' }, @{ Version = 'v1.0.0' }
+    ) {
+        { ConvertTo-MsiProductVersion $Version } | Should -Throw
+    }
+}
+
+Describe 'Format-Sha256Sums' {
+    It 'writes sorted sha256sum lines with LF endings that ConvertFrom-Sha256Sums reads back' {
+        $text = Format-Sha256Sums @(
+            [pscustomobject]@{ Name = 'b.zip'; Hash = 'AB' * 32 }
+            [pscustomobject]@{ Name = 'a.msi'; Hash = 'cd' * 32 })
+        $text | Should -BeExactly ("{0}  a.msi`n{1}  b.zip`n" -f ('cd' * 32), ('ab' * 32))
+        (ConvertFrom-Sha256Sums $text).Name | Should -Be @('a.msi', 'b.zip')
+    }
+
+    It 'rejects <Name>' -ForEach @(
+        @{ Name = 'a path'; Entry = [pscustomobject]@{ Name = '../a.zip'; Hash = 'ab' * 32 } }
+        @{ Name = 'a bad hash'; Entry = [pscustomobject]@{ Name = 'a.zip'; Hash = 'xyz' } }
+        @{ Name = 'a newline'; Entry = [pscustomobject]@{ Name = "a.zip`nevil"; Hash = 'ab' * 32 } }
+    ) {
+        { Format-Sha256Sums @($Entry) } | Should -Throw
     }
 }
 
@@ -326,30 +424,68 @@ Describe 'ConvertFrom-Sha256Sums' {
 
 Describe 'Format-ReleaseNotes' {
     BeforeAll {
-        $script:hash = ('0123456789ABCDEF' * 4)
-        $script:notes = Format-ReleaseNotes -Version '1.5.0' -ZipName 'WinXCornersPlus-1.5.0-win-x64.zip' -Sha256 $hash -Repository 'owner/WinXCornersPlus'
+        function New-Assets([string] $Version) {
+            $i = 0
+            foreach ($kind in 'msi', 'zip') {
+                foreach ($arch in 'x64', 'arm64') {
+                    $i++
+                    [pscustomobject]@{ Name = (Get-ReleaseAssetName -Kind $kind -Architecture $arch -Version $Version); Hash = ("{0:X}" -f $i) * 64 }
+                }
+            }
+        }
+        $script:assets = @(New-Assets '1.5.0')
+        $script:notes = Format-ReleaseNotes -Version '1.5.0' -Assets $assets -Repository 'owner/WinXCornersPlus'
     }
 
-    It 'states the lower-case SHA-256' { $notes | Should -BeLike "*$($hash.ToLower())*" }
-    It 'explains Get-FileHash' { $notes | Should -BeLike '*Get-FileHash .\WinXCornersPlus-1.5.0-win-x64.zip -Algorithm SHA256*' }
-    It 'explains gh attestation verify' { $notes | Should -BeLike '*gh attestation verify WinXCornersPlus-1.5.0-win-x64.zip --repo owner/WinXCornersPlus*' }
+    It 'lists every file with its lower-case SHA-256' {
+        foreach ($asset in $assets) { $notes.Contains("| ``$($asset.Name)`` | ``$($asset.Hash.ToLower())`` |") | Should -BeTrue }
+    }
+    It 'says which file is for whom and recommends the installer' {
+        $notes | Should -BeLike '*WinXCornersPlus-1.5.0-x64.msi*Recommended*'
+        $notes | Should -BeLike '*Windows on Arm*'
+        $notes | Should -BeLike '*Portable*'
+        $notes | Should -BeLike '*installer if you will ever run WinXCornersPlus as administrator*'
+        $notes | Should -BeLike '*no 32-bit (x86) build*'
+    }
+    It 'explains Get-FileHash' { $notes | Should -BeLike '*Get-FileHash .\WinXCornersPlus-1.5.0-x64.msi -Algorithm SHA256*' }
+    It 'explains gh attestation verify for the repository that built it' {
+        $notes | Should -BeLike '*gh attestation verify WinXCornersPlus-1.5.0-x64.msi --repo owner/WinXCornersPlus*'
+        $notes | Should -BeLike '*https://github.com/owner/WinXCornersPlus/blob/master/docs/INSTALLING.md*'
+    }
+    It 'uses the given server URL' {
+        Format-ReleaseNotes -Version '1.5.0' -Assets $assets -Repository 'o/r' -ServerUrl 'https://ghe.example.com' |
+            Should -BeLike '*https://ghe.example.com/o/r/blob/*'
+    }
     It 'says it is not code-signed and shows Unknown publisher' {
         $notes | Should -BeLike '*not code-signed*'
         $notes | Should -BeLike '*Unknown publisher*'
+    }
+    It 'credits SignPath when signed through SignPath' {
+        $signed = Format-ReleaseNotes -Version '1.5.0' -Assets $assets -Repository 'o/r' -SignedBy signpath
+        $signed | Should -BeLike '*Free code signing provided by SignPath.io, certificate by SignPath Foundation*'
+        $signed | Should -Not -BeLike '*not code-signed*'
+    }
+    It 'names Azure Artifact Signing when signed through Azure' {
+        Format-ReleaseNotes -Version '1.5.0' -Assets $assets -Repository 'o/r' -SignedBy azure | Should -BeLike '*Azure Artifact Signing*'
     }
     It 'names the .NET 10 Desktop Runtime' { $notes | Should -BeLike '*.NET 10 Desktop Runtime*' }
     It 'has no prerelease banner for a stable release' { $notes | Should -Not -BeLike '*Prerelease.*' }
 
     It 'adds a prerelease banner for a prerelease' {
-        Format-ReleaseNotes -Version '1.6.0-rc.4' -ZipName 'WinXCornersPlus-1.6.0-rc.4-win-x64.zip' -Sha256 $hash -Repository 'o/r' -Prerelease |
+        Format-ReleaseNotes -Version '1.6.0-rc.4' -Assets @(New-Assets '1.6.0-rc.4') -Repository 'o/r' -Prerelease |
             Should -BeLike '*Prerelease.*final 1.6.0*'
     }
 
     It 'rejects <Name>' -ForEach @(
-        @{ Name = 'bad repository'; Repo = 'o/r; rm -rf'; Zip = 'a.zip'; Sha = ('ab' * 32) }
-        @{ Name = 'bad hash'; Repo = 'o/r'; Zip = 'a.zip'; Sha = 'xyz' }
-        @{ Name = 'path in zip name'; Repo = 'o/r'; Zip = '../a.zip'; Sha = ('ab' * 32) }
+        @{ Name = 'bad repository'; Repo = 'o/r; rm -rf'; Server = 'https://github.com'; Signed = ''; Drop = 0; Bad = $null }
+        @{ Name = 'bad server'; Repo = 'o/r'; Server = 'http://github.com'; Signed = ''; Drop = 0; Bad = $null }
+        @{ Name = 'unknown signer'; Repo = 'o/r'; Server = 'https://github.com'; Signed = 'me'; Drop = 0; Bad = $null }
+        @{ Name = 'a missing asset'; Repo = 'o/r'; Server = 'https://github.com'; Signed = ''; Drop = 1; Bad = $null }
+        @{ Name = 'a bad hash'; Repo = 'o/r'; Server = 'https://github.com'; Signed = ''; Drop = 0; Bad = [pscustomobject]@{ Name = 'x.zip'; Hash = 'xyz' } }
+        @{ Name = 'a path in a name'; Repo = 'o/r'; Server = 'https://github.com'; Signed = ''; Drop = 0; Bad = [pscustomobject]@{ Name = '../x.zip'; Hash = 'ab' * 32 } }
     ) {
-        { Format-ReleaseNotes -Version '1.5.0' -ZipName $Zip -Sha256 $Sha -Repository $Repo } | Should -Throw
+        $list = @($assets | Select-Object -Skip $Drop)
+        if ($Bad) { $list += $Bad }
+        { Format-ReleaseNotes -Version '1.5.0' -Assets $list -Repository $Repo -ServerUrl $Server -SignedBy $Signed } | Should -Throw
     }
 }

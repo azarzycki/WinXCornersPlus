@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WinXCornersPlus installer. Why it exists and what it promises: docs/INSTALLING.md.
+
+  The one essential property: the program files end up in %ProgramFiles%\WinXCornersPlus, a folder that only
+  administrators can change, so approving the app's "run as administrator" prompt can never hand administrator
+  rights to files that a normal-rights program replaced. The folder is deliberately not configurable (its
+  directory id is not a public property), and the installer never weakens its permissions.
+
+  What it does NOT do: add an autostart (Run) entry, set the app to run as administrator, touch PATH, install
+  services or scheduled tasks, start the app (an installer runs elevated, and so would anything it starts), or
+  write outside its folder, its Start-menu shortcut and the registry keys named below.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+     xmlns:netfx="http://wixtoolset.org/schemas/v4/wxs/netfx"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <?if $(sys.BUILDARCH) = "arm64" ?>
+    <?define CaSuffix = "_A64" ?>
+    <?define RuntimePlatform = "arm64" ?>
+    <?define RuntimeArchitectureName = "Arm64" ?>
+  <?elseif $(sys.BUILDARCH) = "x64" ?>
+    <?define CaSuffix = "_X64" ?>
+    <?define RuntimePlatform = "x64" ?>
+    <?define RuntimeArchitectureName = "x64" ?>
+  <?else?>
+    <?error Only x64 and arm64 packages are built (InstallerPlatform=x64 or arm64). ?>
+  <?endif?>
+
+  <!--
+    UpgradeCode: the identity of "WinXCornersPlus" across all versions and both architectures. NEVER change it,
+    or new versions would install beside old ones instead of replacing them.
+    Manufacturer: the same publisher as <Company> in src/WinXCorners.App/WinXCorners.App.csproj.
+  -->
+  <Package Name="WinXCornersPlus"
+           Manufacturer="Asteski"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="791AA4DB-70E0-473F-983F-779AF25323D4"
+           Scope="perMachine"
+           Language="1033"
+           Compressed="yes">
+
+    <SummaryInformation Description="WinXCornersPlus $(var.ProductVersion) ($(sys.BUILDARCH)) installer" />
+
+    <!-- A newer package replaces an older install in place; an older one is refused. The same version replaces
+         itself (so the final release replaces its release candidate, which has the same numeric version). -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of WinXCornersPlus is already installed. To go back to this version, uninstall the newer one first (Settings > Apps > Installed apps)." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Add/Remove Programs entry -->
+    <Icon Id="AppIcon" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="$(var.ProjectUrl)" />
+    <Property Id="ARPHELPLINK" Value="$(var.ProjectUrl)/issues" />
+    <Property Id="ARPURLUPDATEINFO" Value="$(var.ProjectUrl)/releases" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!--
+      Prerequisite: the app is framework-dependent. WiX's NetCoreCheck asks the .NET host whether the
+      Microsoft.WindowsDesktop.App runtime of this architecture can run an app built for $(var.DotNetCheckVersion)
+      (roll forward to a newer 10.x, like the app itself); 0 means yes. Nothing is downloaded or bundled.
+    -->
+    <netfx:DotNetCompatibilityCheck Property="WXC_DOTNET_DESKTOP_CHECK"
+                                    RuntimeType="desktop"
+                                    Platform="$(var.RuntimePlatform)"
+                                    Version="$(var.DotNetCheckVersion)"
+                                    RollForward="minor" />
+    <Launch Condition="Installed OR WXC_DOTNET_DESKTOP_CHECK = &quot;0&quot;"
+            Message="WinXCornersPlus needs the .NET 10 Desktop Runtime ($(var.RuntimeArchitectureName)), which is not installed on this computer. Download &quot;.NET Desktop Runtime 10&quot; for Windows $(var.RuntimeArchitectureName) from https://dotnet.microsoft.com/download/dotnet/10.0, install it, then run this installer again." />
+
+    <!--
+      A running copy is closed before its files are replaced or removed (upgrade and uninstall), so neither fails
+      or needs a reboot. It receives WM_QUERYENDSESSION/WM_ENDSESSION with ENDSESSION_CLOSEAPP (the same messages
+      the Restart Manager sends), on which the app saves its settings, removes its tray icon and exits (Core's
+      SessionEndPolicy). Only if it is still running after the timeout is it terminated. It is never restarted:
+      the installer runs elevated, and a copy started by it would run as administrator.
+    -->
+    <util:CloseApplication Id="CloseRunningApp"
+                           Target="WinXCornersPlus.exe"
+                           CloseMessage="no"
+                           EndSessionMessage="yes"
+                           ElevatedEndSessionMessage="yes"
+                           RebootPrompt="no"
+                           TerminateProcess="1"
+                           Timeout="10" />
+
+    <InstallExecuteSequence>
+      <!-- WiX schedules the close just before InstallFiles, which is after RemoveFiles: an uninstall would then try
+           to delete the running exe first and schedule a reboot. Close it at the start of the script instead. -->
+      <Custom Action="override Wix4CloseApplications$(var.CaSuffix)" After="InstallInitialize" Condition="VersionNT &gt; 400" />
+      <Custom Action="RemoveAutostartValue" Before="RemoveRegistryValues" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
+    <!--
+      Uninstall only (not an upgrade): remove the uninstalling user's autostart value that the app's
+      "Start with Windows" setting creates (HKCU\Software\Microsoft\Windows\CurrentVersion\Run, value
+      WinXCornersPlus), so Windows does not try to start a program that no longer exists. Windows Installer has no
+      declarative "delete this one value on uninstall", so this is the package's only own custom action: it runs
+      System32\reg.exe with a fixed command line, as the user (impersonated), and its result is ignored (the value
+      usually does not exist). Settings under %APPDATA%\WinXCornersPlus are left alone on purpose.
+    -->
+    <SetProperty Id="RemoveAutostartValue"
+                 Value="&quot;[System64Folder]reg.exe&quot; delete &quot;HKCU\Software\Microsoft\Windows\CurrentVersion\Run&quot; /v WinXCornersPlus /f"
+                 Before="RemoveAutostartValue"
+                 Sequence="execute"
+                 Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    <CustomAction Id="RemoveAutostartValue"
+                  BinaryRef="Wix4UtilCA$(var.CaSuffix)"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="ignore" />
+
+    <Feature Id="Main" Title="WinXCornersPlus" AllowAbsent="no">
+      <ComponentGroupRef Id="ProgramFiles" />
+    </Feature>
+
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+  </Package>
+
+  <Fragment>
+    <!-- "AppFolder" is not a public (upper-case) property, so the location cannot be changed from the command line. -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="AppFolder" Name="WinXCornersPlus" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="ProgramFiles" Directory="AppFolder">
+      <Component Id="MainExecutable">
+        <File Id="AppExe" Source="$(var.PayloadDir)\WinXCornersPlus.exe" KeyPath="yes">
+          <Shortcut Id="StartMenuShortcut"
+                    Directory="ProgramMenuFolder"
+                    Name="WinXCornersPlus"
+                    Description="Hot corners for Windows" />
+        </File>
+        <!-- Uninstall only (not an upgrade): the elevated-session approvals the app keeps in
+             HKLM\SOFTWARE\WinXCornersPlus (ApprovedSettingsStore). An upgrade keeps them. -->
+        <util:RemoveRegistryKey Root="HKLM" Key="SOFTWARE\WinXCornersPlus" On="uninstall" Condition="NOT UPGRADINGPRODUCTCODE" />
+      </Component>
+
+      <!-- Everything else in the payload (DLLs, runtime config, licence): the same files as the zip. -->
+      <Files Include="$(var.PayloadDir)\**">
+        <Exclude Files="$(var.PayloadDir)\WinXCornersPlus.exe" />
+      </Files>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

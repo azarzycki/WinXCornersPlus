@@ -35,6 +35,11 @@ BeforeAll {
         return $repo
     }
 
+    function ConvertFrom-Sha256SumsForTest([string] $Text) {
+        Import-Module (Join-Path $scripts 'ReleaseTools.psm1') -Force
+        return @(ConvertFrom-Sha256Sums $Text | ForEach-Object Name)
+    }
+
     function Add-TestCommit {
         param([string] $Repo, [string] $Message)
         Invoke-TestGit $Repo @('commit', '-q', '--allow-empty', '-m', $Message)
@@ -127,15 +132,32 @@ Describe 'Get-ReleaseVersion.ps1' {
     }
 }
 
-Describe 'Confirm-ReleaseChecksums.ps1 and New-ReleaseNotes.ps1' {
+Describe 'New-ReleaseChecksums.ps1, Confirm-ReleaseChecksums.ps1 and New-ReleaseNotes.ps1' {
     BeforeEach {
         $script:dir = New-TempDirectory
+        $script:names = @('WinXCornersPlus-1.5.0-x64.msi', 'WinXCornersPlus-1.5.0-arm64.msi',
+            'WinXCornersPlus-1.5.0-win-x64.zip', 'WinXCornersPlus-1.5.0-win-arm64.zip')
+        foreach ($name in $names) { [System.IO.File]::WriteAllText((Join-Path $dir $name), "not really $name") }
         $script:zip = Join-Path $dir 'WinXCornersPlus-1.5.0-win-x64.zip'
-        [System.IO.File]::WriteAllText($zip, 'not really a zip')
         $script:hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-        [System.IO.File]::WriteAllText((Join-Path $dir 'SHA256SUMS.txt'), "$hash  WinXCornersPlus-1.5.0-win-x64.zip`n")
+        & (Join-Path $scripts 'New-ReleaseChecksums.ps1') -Directory $dir -Version '1.5.0' 6>$null
     }
     AfterEach { Remove-Item -LiteralPath $script:dir -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'lists all four assets, sorted, in sha256sum format' {
+        $text = [System.IO.File]::ReadAllText((Join-Path $dir 'SHA256SUMS.txt'))
+        $text | Should -Not -BeLike "*`r*"
+        (ConvertFrom-Sha256SumsForTest $text) | Should -Be ($names | Sort-Object)
+        $text | Should -BeLike "*$hash  WinXCornersPlus-1.5.0-win-x64.zip*"
+    }
+
+    It 'refuses a missing or an unexpected asset' {
+        Remove-Item -LiteralPath $zip
+        { & (Join-Path $scripts 'New-ReleaseChecksums.ps1') -Directory $dir -Version '1.5.0' 6>$null } | Should -Throw '*missing*win-x64.zip*'
+        [System.IO.File]::WriteAllText($zip, 'back')
+        [System.IO.File]::WriteAllText((Join-Path $dir 'WinXCornersPlus-1.5.0-x86.msi'), 'x')
+        { & (Join-Path $scripts 'New-ReleaseChecksums.ps1') -Directory $dir -Version '1.5.0' 6>$null } | Should -Throw '*Unexpected*x86*'
+    }
 
     It 'accepts matching checksums' {
         { & (Join-Path $scripts 'Confirm-ReleaseChecksums.ps1') -Directory $dir 6>$null } | Should -Not -Throw
@@ -151,14 +173,16 @@ Describe 'Confirm-ReleaseChecksums.ps1 and New-ReleaseNotes.ps1' {
         { & (Join-Path $scripts 'Confirm-ReleaseChecksums.ps1') -Directory $dir 6>$null } | Should -Throw '*missing*'
     }
 
-    It 'writes release notes that carry the zip hash' {
+    It 'writes release notes that carry every hash and the repository they were built in' {
         $notes = Join-Path $dir 'notes.md'
         & (Join-Path $scripts 'New-ReleaseNotes.ps1') -Directory $dir -Version '1.5.0' -Repository 'owner/repo' -OutputFile $notes 6>$null
-        Get-Content -LiteralPath $notes -Raw | Should -BeLike "*$hash*gh attestation verify*"
+        $text = Get-Content -LiteralPath $notes -Raw
+        $text | Should -BeLike "*$hash*gh attestation verify*--repo owner/repo*"
+        $text | Should -BeLike '*not code-signed*'
     }
 
     It 'refuses to write notes for a version that is not in SHA256SUMS.txt' {
         { & (Join-Path $scripts 'New-ReleaseNotes.ps1') -Directory $dir -Version '1.5.1' -Repository 'o/r' -OutputFile (Join-Path $dir 'n.md') 6>$null } |
-            Should -Throw '*no single entry*'
+            Should -Throw '*missing*'
     }
 }

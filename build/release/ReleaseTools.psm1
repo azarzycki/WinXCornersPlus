@@ -236,19 +236,119 @@ function Get-NextReleaseVersion {
 function Test-IsRealRelease {
     <#
     .SYNOPSIS
-      True only for a push to master, or a manual run on master with dry_run off. Everything else
-      (hardening/** pushes, manual runs on other branches, unknown events) is a dry run.
+      True only for a manual run on master with dry_run off, or a push to master when the repository variable
+      RELEASE_ON_PUSH is exactly 'true'. Everything else (a push to master without that opt-in, hardening/**
+      pushes, manual runs on other branches, pull requests, unknown events) is a dry run.
+    .DESCRIPTION
+      Merging into master therefore never publishes by surprise: by default the maintainer publishes with a
+      manual run (docs/RELEASING.md, "How to turn on fully automatic releases").
     #>
     [CmdletBinding()]
     param(
         [AllowNull()] [AllowEmptyString()] [string] $EventName,
         [AllowNull()] [AllowEmptyString()] [string] $Ref,
-        [AllowNull()] [AllowEmptyString()] [string] $DryRunInput
+        [AllowNull()] [AllowEmptyString()] [string] $DryRunInput,
+        [AllowNull()] [AllowEmptyString()] [string] $ReleaseOnPush
     )
     if ($Ref -cne 'refs/heads/master') { return $false }
-    if ($EventName -ceq 'push') { return $true }
+    if ($EventName -ceq 'push') { return ($ReleaseOnPush -ceq 'true') }
     if ($EventName -ceq 'workflow_dispatch') { return ($DryRunInput -ceq 'false') }
     return $false
+}
+
+function Get-CodeSigningPlan {
+    <#
+    .SYNOPSIS
+      Decides whether this run code-signs, and with which provider. Pure: the caller passes what is configured.
+    .PARAMETER Provider
+      The repository variable CODE_SIGNING_PROVIDER: '' (not configured), 'signpath' or 'azure'.
+    .PARAMETER Configured
+      The names of the repository variables/secrets that are set (non-empty). Secret VALUES are never passed.
+    .PARAMETER IsRealRelease
+      Only real releases sign. Dry runs (branches, pull requests, master without opt-in) never do.
+    .OUTPUTS
+      Provider ('none', 'signpath' or 'azure'), Missing (names still needed) and Note (one line for the summary).
+      Throws when a real release has a provider selected but not all of its settings: shipping unsigned files by
+      accident after the maintainer asked for signing would be worse than a failed run.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()] [AllowEmptyString()] [string] $Provider,
+        [AllowNull()] [AllowEmptyCollection()] [string[]] $Configured = @(),
+        [switch] $IsRealRelease,
+        [AllowNull()] [AllowEmptyString()] [string] $EventName
+    )
+    $requirements = @{
+        signpath = @('SIGNPATH_ORGANIZATION_ID', 'SIGNPATH_PROJECT_SLUG', 'SIGNPATH_SIGNING_POLICY_SLUG',
+            'SIGNPATH_APP_ARTIFACT_CONFIGURATION_SLUG', 'SIGNPATH_INSTALLER_ARTIFACT_CONFIGURATION_SLUG', 'SIGNPATH_API_TOKEN')
+        azure    = @('AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_SUBSCRIPTION_ID', 'AZURE_SIGNING_ENDPOINT',
+            'AZURE_SIGNING_ACCOUNT_NAME', 'AZURE_CERTIFICATE_PROFILE_NAME')
+    }
+    $name = if ($null -eq $Provider) { '' } else { $Provider.Trim().ToLowerInvariant() }
+    if ($name -eq '' -or $name -eq 'none') {
+        return [pscustomobject]@{ Provider = 'none'; Missing = @(); Note = 'Not code-signed: no signing provider is configured (CODE_SIGNING_PROVIDER).' }
+    }
+    if (-not $requirements.ContainsKey($name)) {
+        throw "CODE_SIGNING_PROVIDER is '$Provider'; expected 'signpath', 'azure' or empty."
+    }
+    $present = @($Configured | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $missing = @($requirements[$name] | Where-Object { $_ -cnotin $present })
+    if ($EventName -ceq 'pull_request' -or $EventName -ceq 'pull_request_target' -or -not $IsRealRelease) {
+        $suffix = if ($missing.Count -gt 0) { " Still missing for a real release: $($missing -join ', ')." } else { '' }
+        return [pscustomobject]@{ Provider = 'none'; Missing = $missing; Note = "Not code-signed: this is a dry run (a real release would sign with $name).$suffix" }
+    }
+    if ($missing.Count -gt 0) {
+        throw "Code signing with '$name' is selected but these repository variables/secrets are not set: $($missing -join ', ')."
+    }
+    return [pscustomobject]@{ Provider = $name; Missing = @(); Note = "Code-signed with $name." }
+}
+
+function Get-ReleaseAssetName {
+    <#
+    .SYNOPSIS
+      File names of the release assets: WinXCornersPlus-<version>-win-<arch>.zip and WinXCornersPlus-<version>-<arch>.msi.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [ValidateSet('zip', 'msi')] [string] $Kind,
+        [Parameter(Mandatory)] [ValidateSet('x64', 'arm64')] [string] $Architecture,
+        [Parameter(Mandatory)] [string] $Version
+    )
+    if ($Version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?\z') { throw "Version '$Version' is not a release version." }
+    if ($Kind -ceq 'zip') { return "WinXCornersPlus-$Version-win-$Architecture.zip" }
+    return "WinXCornersPlus-$Version-$Architecture.msi"
+}
+
+function ConvertTo-MsiProductVersion {
+    <#
+    .SYNOPSIS
+      The MSI ProductVersion for a release: MAJOR.MINOR.PATCH without any prerelease suffix (Windows Installer
+      versions are numeric, major and minor at most 255, the third field at most 65535).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Version)
+    $m = [regex]::Match($Version, '\A(?<major>0|[1-9][0-9]{0,4})\.(?<minor>0|[1-9][0-9]{0,4})\.(?<patch>0|[1-9][0-9]{0,4})(?:-rc\.[0-9]+)?\z')
+    if (-not $m.Success) { throw "Version '$Version' is not a release version." }
+    $major = [int] $m.Groups['major'].Value; $minor = [int] $m.Groups['minor'].Value; $patch = [int] $m.Groups['patch'].Value
+    if ($major -gt 255 -or $minor -gt 255 -or $patch -gt 65535) {
+        throw "Version '$Version' cannot be an MSI ProductVersion (major and minor at most 255, patch at most 65535)."
+    }
+    return '{0}.{1}.{2}' -f $major, $minor, $patch
+}
+
+function Format-Sha256Sums {
+    <#
+    .SYNOPSIS
+      sha256sum-format text ("<hash>  <name>", LF line endings, sorted by name) for the given Name/Hash pairs.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [object[]] $Entries)
+    $lines = foreach ($entry in ($Entries | Sort-Object { $_.Name } -Culture ([System.Globalization.CultureInfo]::InvariantCulture))) {
+        if ($entry.Hash -notmatch '\A[0-9a-fA-F]{64}\z') { throw "Hash for '$($entry.Name)' is not 64 hex characters." }
+        if ($entry.Name -notmatch '\A[0-9A-Za-z._-]+\z' -or $entry.Name -in '.', '..') { throw "'$($entry.Name)' is not a plain file name." }
+        '{0}  {1}' -f $entry.Hash.ToLowerInvariant(), $entry.Name
+    }
+    return (@($lines) -join "`n") + "`n"
 }
 
 function Select-ReleasePayload {
@@ -328,60 +428,98 @@ function ConvertFrom-Sha256Sums {
 function Format-ReleaseNotes {
     <#
     .SYNOPSIS
-      Builds the hand-written part of the GitHub Release body (GitHub's generated change list is
-      appended after it by `gh release create --generate-notes`).
+      Builds the hand-written part of the GitHub Release body (GitHub's generated change list is appended
+      after it by `gh release create --generate-notes`): which file is for whom, requirements, how to verify,
+      and whether the files are code-signed.
+    .PARAMETER Assets
+      Name/Hash pairs for every release file (zips and MSIs), as read back from SHA256SUMS.txt.
+    .PARAMETER Repository
+      owner/name of the repository that builds the release (github.repository): used for links and for
+      `gh attestation verify --repo`, so the notes are right in whichever repository runs the workflow.
+    .PARAMETER SignedBy
+      Empty when the files are not code-signed; otherwise the provider that signed them (signpath or azure).
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Version,
-        [Parameter(Mandatory)] [string] $ZipName,
-        [Parameter(Mandatory)] [string] $Sha256,
+        [Parameter(Mandatory)] [object[]] $Assets,
         [Parameter(Mandatory)] [string] $Repository,
+        [string] $ServerUrl = 'https://github.com',
+        [AllowNull()] [AllowEmptyString()] [string] $SignedBy,
         [switch] $Prerelease
     )
     if ($Repository -notmatch '\A[A-Za-z0-9-]+/[A-Za-z0-9._-]+\z') { throw "Repository '$Repository' is not owner/name." }
-    if ($Sha256 -notmatch '\A[0-9a-fA-F]{64}\z') { throw 'Sha256 must be 64 hex characters.' }
-    if ($ZipName -notmatch '\A[0-9A-Za-z._-]+\.zip\z') { throw "Zip name '$ZipName' is not a plain file name." }
-    $hash = $Sha256.ToLowerInvariant()
+    if ($ServerUrl -notmatch '\Ahttps://[A-Za-z0-9.-]+(:[0-9]+)?\z') { throw "Server URL '$ServerUrl' is not an https origin." }
+    if ($SignedBy -and $SignedBy -cnotin 'signpath', 'azure') { throw "SignedBy '$SignedBy' must be signpath, azure or empty." }
+    $byName = @{}
+    foreach ($asset in $Assets) {
+        if ($asset.Name -notmatch '\A[0-9A-Za-z._-]+\.(zip|msi)\z') { throw "Asset name '$($asset.Name)' is not a plain .zip or .msi file name." }
+        if ($asset.Hash -notmatch '\A[0-9a-fA-F]{64}\z') { throw "Hash for '$($asset.Name)' must be 64 hex characters." }
+        $byName[$asset.Name] = $asset.Hash.ToLowerInvariant()
+    }
+    $expected = foreach ($kind in 'msi', 'zip') { foreach ($arch in 'x64', 'arm64') { Get-ReleaseAssetName -Kind $kind -Architecture $arch -Version $Version } }
+    foreach ($name in $expected) { if (-not $byName.ContainsKey($name)) { throw "Release asset $name is missing." } }
+    $msiX64, $msiArm, $zipX64, $zipArm = $expected
+    $project = "$ServerUrl/$Repository"
 
     $lines = [System.Collections.Generic.List[string]]::new()
     if ($Prerelease) {
         $lines.Add("> **Prerelease.** This is a release candidate for testing; it may change before the final $(($Version -split '-')[0]).")
         $lines.Add('')
     }
-    $lines.Add("## Download")
+    $lines.Add('## Which file do I need?')
     $lines.Add('')
-    $lines.Add("Download ``$ZipName``, extract it anywhere you like and run ``WinXCornersPlus.exe``.")
+    $lines.Add('| File | For |')
+    $lines.Add('|---|---|')
+    $lines.Add("| ``$msiX64`` | **Recommended.** Installer for most PCs (Intel or AMD, 64-bit). |")
+    $lines.Add("| ``$msiArm`` | Installer for Windows on Arm PCs (for example Snapdragon). |")
+    $lines.Add("| ``$zipX64`` | Portable: extract anywhere and run ``WinXCornersPlus.exe`` (Intel or AMD). |")
+    $lines.Add("| ``$zipArm`` | Portable, for Windows on Arm. |")
     $lines.Add('')
-    $lines.Add('**Requirements:** Windows 10 or 11 (x64) and the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (x64). If it is missing, Windows offers to download it the first time you start the app.')
+    $lines.Add('**Use the installer if you will ever run WinXCornersPlus as administrator.** It puts the program in `C:\Program Files\WinXCornersPlus`, which only administrators can change. A portable copy in Downloads or on the Desktop can be replaced by any program you run, and approving the administrator prompt would then run that replacement with full rights. The app shows this on its Security page.')
+    $lines.Add('')
+    $lines.Add('Not sure which PC you have? *Settings > System > About > System type* says "x64-based processor" or "ARM-based processor". There is no 32-bit (x86) build.')
+    $lines.Add('')
+    $lines.Add("**Requirements:** Windows 10 or 11 and the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) for the same architecture (x64 or Arm64). The installer checks for it and tells you if it is missing; the portable app shows Windows' own prompt to download it.")
+    $lines.Add('')
+    $lines.Add('Installing, upgrading and what is kept on uninstall: [docs/INSTALLING.md](' + $project + '/blob/master/docs/INSTALLING.md).')
     $lines.Add('')
     $lines.Add('## Verify your download')
     $lines.Add('')
-    $lines.Add("SHA-256 of ``$ZipName``:")
+    $lines.Add('| File | SHA-256 |')
+    $lines.Add('|---|---|')
+    foreach ($name in $expected) { $lines.Add("| ``$name`` | ``$($byName[$name])`` |") }
     $lines.Add('')
-    $lines.Add('```')
-    $lines.Add($hash)
-    $lines.Add('```')
-    $lines.Add('')
-    $lines.Add('In PowerShell, in the folder you downloaded it to (the two lines must match):')
+    $lines.Add('In PowerShell, in the folder you downloaded to, compare the output with the table (or with the attached `SHA256SUMS.txt`):')
     $lines.Add('')
     $lines.Add('```powershell')
-    $lines.Add("(Get-FileHash .\$ZipName -Algorithm SHA256).Hash.ToLower()")
-    $lines.Add("'$hash'")
+    $lines.Add("(Get-FileHash .\$msiX64 -Algorithm SHA256).Hash.ToLower()")
     $lines.Add('```')
     $lines.Add('')
-    $lines.Add('The same hash is in the attached `SHA256SUMS.txt`. To check that the zip was built by this repository''s release workflow from its source (build provenance), use the [GitHub CLI](https://cli.github.com/):')
+    $lines.Add('To check that a file was built from this repository''s source by its release workflow (build provenance), use the [GitHub CLI](https://cli.github.com/):')
     $lines.Add('')
     $lines.Add('```')
-    $lines.Add("gh attestation verify $ZipName --repo $Repository")
+    $lines.Add("gh attestation verify $msiX64 --repo $Repository")
     $lines.Add('```')
     $lines.Add('')
-    $lines.Add('## Not code-signed')
-    $lines.Add('')
-    $lines.Add('The executable is **not code-signed**. Windows SmartScreen and UAC will show **"Unknown publisher"** (and possibly "Windows protected your PC"; choose *More info* > *Run anyway*). Verify the hash or the attestation above before you trust the file.')
+    if ($SignedBy -ceq 'signpath') {
+        $lines.Add('## Code signing')
+        $lines.Add('')
+        $lines.Add('The program files and installers are Authenticode-signed. Free code signing provided by SignPath.io, certificate by SignPath Foundation (shown as the publisher).')
+    }
+    elseif ($SignedBy -ceq 'azure') {
+        $lines.Add('## Code signing')
+        $lines.Add('')
+        $lines.Add('The program files and installers are Authenticode-signed through Azure Artifact Signing; Windows shows the maintainer as the publisher.')
+    }
+    else {
+        $lines.Add('## Not code-signed')
+        $lines.Add('')
+        $lines.Add('The files are **not code-signed**. Windows SmartScreen and UAC will show **"Unknown publisher"** (and possibly "Windows protected your PC"; choose *More info* > *Run anyway*). Verify the hash or the attestation above before you trust a file.')
+    }
     return ($lines -join "`n") + "`n"
 }
 
 Export-ModuleMember -Function ConvertFrom-ReleaseTag, ConvertFrom-BaseVersion, Get-LatestStableRelease, Get-CommitBump,
-    Get-NextReleaseVersion, Test-IsRealRelease, Select-ReleasePayload, Test-VersionStamp, ConvertFrom-Sha256Sums,
-    Format-ReleaseNotes
+    Get-NextReleaseVersion, Test-IsRealRelease, Get-CodeSigningPlan, Get-ReleaseAssetName, ConvertTo-MsiProductVersion,
+    Format-Sha256Sums, Select-ReleasePayload, Test-VersionStamp, ConvertFrom-Sha256Sums, Format-ReleaseNotes
