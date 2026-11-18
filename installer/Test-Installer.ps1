@@ -145,11 +145,20 @@ function Invoke-AppProbe([string] $Directory) {
 </Project>
 '@
         Set-Content -LiteralPath (Join-Path $work 'Program.cs') -Value @'
+using System;
+using System.IO;
+using System.Linq;
 using System.Reflection;
 var assembly = Assembly.LoadFrom(args[0]);
 var probe = assembly.GetType("WinXCorners.App.InstallLocationProbe", throwOnError: true)!;
 var method = probe.GetMethod("IsWritableByNonAdministrators", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)!;
-var result = (bool?)method.Invoke(null, new object[] { args[1] });
+// Same inputs as the app passes for itself: the folder plus the program files in it (exe and DLLs).
+var directory = args[1];
+var files = Directory.Exists(directory)
+    ? Directory.EnumerateFiles(directory).Where(static file =>
+        file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)).ToArray()
+    : Array.Empty<string>();
+var result = (bool?)method.Invoke(null, new object?[] { directory, files });
 Console.WriteLine(result is null ? "null" : result.Value ? "true" : "false");
 '@
         & dotnet build $work -c Release -o (Join-Path $work 'bin') -nologo -v q | Out-Host
