@@ -86,14 +86,32 @@ public sealed class StartupRegistrationTests : IDisposable
     }
 
     [Fact]
-    public void An_unquoted_legacy_value_for_this_executable_is_recognised_and_left_as_it_is()
+    public void An_unquoted_legacy_value_without_spaces_is_recognised_and_left_as_it_is()
     {
         // Core's StartupCommandLine reads an unquoted value up to the first ".exe" (as v1.4 may have written it).
-        WriteRaw(_exePath);
-        var registration = new StartupRegistration(_log, _valueName, _exePath);
+        const string exe = @"C:\Tools\WinXCornersPlus\WinXCornersPlus.exe";
+        WriteRaw(exe);
+        var registration = new StartupRegistration(_log, _valueName, exe);
 
         Assert.True(registration.IsEnabled());
         Assert.Null(registration.GetStaleEntryPath());
+        Assert.Equal(exe, ReadRaw());
+    }
+
+    /// <summary>
+    /// Review V2: the same legacy value with a space in the path used to count as "this executable", but Windows may
+    /// start C:\Program.exe for it. It is now stale (reported, so the user saves it again quoted) and still not
+    /// rewritten behind the user's back.
+    /// </summary>
+    [Fact]
+    public void An_unquoted_legacy_value_with_spaces_is_stale_and_left_as_it_is()
+    {
+        WriteRaw(_exePath);
+        var registration = new StartupRegistration(_log, _valueName, _exePath);
+
+        Assert.False(registration.IsEnabled());
+        Assert.Equal(_exePath, registration.GetStaleEntryPath());
+        Assert.Equal(RunEntryState.UnquotedWithSpaces, registration.GetEntryState());
         Assert.Equal(_exePath, ReadRaw());
     }
 
