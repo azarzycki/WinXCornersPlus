@@ -64,15 +64,15 @@ internal static class ProcessElevation
     }
 
     /// <summary>
-    /// Starts this executable again with the <c>runas</c> verb. Returns false with a message when the user declines
-    /// the prompt or the start fails; never throws for those.
+    /// Starts <paramref name="executable"/> (this program, by its full path) with the <c>runas</c> verb. Returns false
+    /// with a message when the user declines the prompt or the start fails; never throws for those.
     /// </summary>
     /// <remarks>
     /// Only a process that is NOT elevated may use this (review V2 D5). An elevated process gets no UAC prompt from
     /// <c>runas</c>, so the program files (which programs without administrator rights may have replaced) would start
     /// elevated silently. Core's RestartPolicy never asks for it then; this check fails closed if anything else does.
     /// </remarks>
-    internal static bool TryRestartElevated(IReadOnlyList<string> arguments, out string? error)
+    internal static bool TryRestartElevated(string executable, IReadOnlyList<string> arguments, out string? error)
     {
         ArgumentNullException.ThrowIfNull(arguments);
         if (IsElevated)
@@ -81,7 +81,6 @@ internal static class ProcessElevation
             return false;
         }
 
-        var executable = Environment.ProcessPath;
         if (string.IsNullOrEmpty(executable) || !Path.IsPathFullyQualified(executable))
         {
             error = "The path of the running program is unknown, so it cannot be restarted.";

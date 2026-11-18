@@ -71,8 +71,8 @@ internal sealed class RestartStarter : IRestartStarter
 
     public bool TryStartThroughElevationPrompt(string executable, IReadOnlyList<string> arguments, out string? error)
     {
-        // ProcessElevation uses this process's own path (the same value) and checks that we are not elevated.
-        return ProcessElevation.TryRestartElevated(arguments, out error);
+        // The same path as the other two ways; ProcessElevation also refuses when this process is elevated.
+        return ProcessElevation.TryRestartElevated(executable, arguments, out error);
     }
 
     public bool TryStartThroughDesktopShell(string executable, IReadOnlyList<string> arguments, out string? error)

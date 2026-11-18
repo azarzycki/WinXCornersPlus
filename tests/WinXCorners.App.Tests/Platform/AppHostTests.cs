@@ -557,7 +557,7 @@ public sealed class AppHostTests : IDisposable
     {
         Skip.IfNot(TestEnvironment.IsElevated, "Only an elevated test process can check the refusal without a real UAC prompt.");
 
-        Assert.False(ProcessElevation.TryRestartElevated(
+        Assert.False(ProcessElevation.TryRestartElevated(Environment.ProcessPath ?? string.Empty,
             CommandLineOptions.BuildRestartArguments(Environment.ProcessId, noElevate: true), out var error));
         Assert.Contains("already runs as administrator", error, StringComparison.Ordinal);
     }
