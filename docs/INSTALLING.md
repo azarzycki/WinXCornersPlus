@@ -55,8 +55,8 @@ msiexec /i WinXCornersPlus-<version>-x64.msi /qn /l*v install.log
 
 Run the newer installer. It replaces the installed version in place (one entry in Installed apps). If
 WinXCornersPlus is running, the installer asks it to close first, the same way Windows does at sign-out
-(the app saves its settings and removes its tray icon); only if it has not closed after 10 seconds is it
-ended. No reboot is needed. The installer does **not** start the app again afterwards: start it from the
+(the app saves its settings and removes its tray icon); if it has not closed after 10 seconds (for example
+because it runs under another account, which the installer's messages may not reach), it is ended. No reboot is needed. The installer does **not** start the app again afterwards: start it from the
 Start menu (or it starts at your next sign-in if *Start with Windows* is on).
 
 Installing an **older** version over a newer one is refused with a message; uninstall the newer one first

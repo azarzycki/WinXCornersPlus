@@ -109,7 +109,7 @@ SHAs.
 | Release script tests | ubuntu + windows | Pester tests of `build/release` (version rules, signing plan, release notes, and a static test of this workflow's gating) | `contents: read` |
 | Gate | (CI) | the whole CI workflow (`ci.yml`). Runs in parallel with the packaging; **publishing needs it to pass** | `contents: read` |
 | Compute version | ubuntu | full clone with tags; dry run or real; the version; whether this run code-signs | `contents: read` |
-| Build and smoke-test | `windows-2025` (x64), `windows-11-arm` (arm64) | `dotnet publish -r win-<arch> --self-contained false` with the version stamped; checks the stamp; stages the payload (no `.pdb`, no `settings.json`, plus `LICENSE.txt`); **starts the exe on that runner**: it must be a native image of that architecture, still running after 6 s, running natively with the .NET runtime loaded; then it is stopped | `contents: read` |
+| Build and smoke-test | `windows-2025` (x64), `windows-11-arm` (arm64) | `dotnet publish -r win-<arch> --self-contained false` with the version stamped; checks the stamp; stages the payload (no `.pdb`, no `settings.json`, plus `LICENSE.txt`); **starts the exe on that runner** as a temporary standard user (the runners are elevated, and an elevated first start stops at the approval dialog): it must be a native image of that architecture, still running after 6 s, running natively with the .NET runtime loaded; then it is stopped and the user and its profile are deleted | `contents: read` |
 | Code signing - program files | windows | **real releases with a signing provider only**: signs the `.exe` and `.dll` files, verifies every signature | `contents: read`, `actions: read`, `id-token: write` |
 | Zip and MSI | matching runner per arch | zips the payload; builds the MSI with WiX (restored from NuGet) and reads it back (name, publisher, version, platform, UpgradeCode, per-machine, file list); builds two test-only MSIs (a higher version; an unmeetable .NET prerequisite) | `contents: read` |
 | Code signing - installer | windows | **real releases with a signing provider only**: signs the MSIs, verifies | as above |
@@ -137,7 +137,9 @@ creates a local user, so never run it on your own PC):
 3. **Run**: the installed app starts as a standard user (it finds the .NET runtime), stays alive, runs
    natively, and exits with code 0 when sent what the installer sends.
 4. **Upgrade while running**: a higher-version MSI installs over the first with the app running: exit 0
-   (not 3010), one entry with the new version, the old process is gone and was not restarted.
+   (not 3010, no `ReplacedInUseFiles`), one entry with the new version, the old process is gone and was not
+   restarted. (On the runner the app runs as a different user than `msiexec`, so it is the 10-second
+   termination fallback that ends it there; step 3 shows that the close messages themselves work.)
 5. **Downgrade**: installing the older MSI again fails (1603) with the downgrade message.
 6. **Uninstall while running**: after creating `HKLM\SOFTWARE\WinXCornersPlus`, the Run value and a
    `settings.json`: exit 0; folder, shortcut, entry, HKLM key and Run value are gone; `settings.json` stays.
