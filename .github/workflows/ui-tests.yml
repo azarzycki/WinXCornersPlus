@@ -77,6 +77,9 @@ jobs:
           }
           (New-Object -ComObject Shell.Application).MinimizeAll()
           Start-Sleep -Seconds 2
+          # Which windows are visible on top (a first-sign-in app can cover the desktop on fresh images).
+          Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle } |
+            ForEach-Object { "Window: '$($_.MainWindowTitle)' process $($_.ProcessName) ($($_.Id))" }
 
       - name: Show OS build, session and screen
         shell: pwsh
