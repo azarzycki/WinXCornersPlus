@@ -62,36 +62,30 @@ Copy-Item -LiteralPath $built -Destination $msiPath -Force
 Remove-Item -LiteralPath $buildOutput -Recurse -Force
 
 # --- Read the package back through the Windows Installer API -------------------------------------------
-function Invoke-Com($Object, [string] $Name, [System.Reflection.BindingFlags] $Kind, [object[]] $Arguments) {
-    return $Object.GetType().InvokeMember($Name, $Kind, $null, $Object, $Arguments)
-}
-$method = [System.Reflection.BindingFlags]::InvokeMethod
-$getter = [System.Reflection.BindingFlags]::GetProperty
-
+# PowerShell's COM adapter calls the methods and parameterized properties (StringData, Property) directly.
 $installer = New-Object -ComObject WindowsInstaller.Installer
-$database = Invoke-Com $installer 'OpenDatabase' $method @($msiPath, 0)
+$database = $installer.OpenDatabase([string] $msiPath, [int] 0) # msiOpenDatabaseModeReadOnly
 $facts = [ordered]@{}
+$files = [System.Collections.Generic.List[string]]::new()
 try {
     foreach ($name in 'ProductName', 'Manufacturer', 'ProductVersion', 'UpgradeCode', 'ALLUSERS', 'ARPURLINFOABOUT') {
-        $view = Invoke-Com $database 'OpenView' $method @("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$name'")
-        Invoke-Com $view 'Execute' $method $null | Out-Null
-        $record = Invoke-Com $view 'Fetch' $method $null
-        $facts[$name] = if ($null -eq $record) { $null } else { Invoke-Com $record 'StringData' $getter @(1) }
-        Invoke-Com $view 'Close' $method $null | Out-Null
+        $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$name'")
+        $view.Execute()
+        $record = $view.Fetch()
+        $facts[$name] = if ($null -eq $record) { $null } else { $record.StringData(1) }
+        $view.Close()
     }
-    $files = [System.Collections.Generic.List[string]]::new()
-    $view = Invoke-Com $database 'OpenView' $method @('SELECT `FileName` FROM `File`')
-    Invoke-Com $view 'Execute' $method $null | Out-Null
-    while ($null -ne ($record = Invoke-Com $view 'Fetch' $method $null)) {
+    $view = $database.OpenView('SELECT `FileName` FROM `File`')
+    $view.Execute()
+    while ($null -ne ($record = $view.Fetch())) {
         # FileName is "SHORT~1.EXT|LongName.ext" when a short name exists.
-        $files.Add(((Invoke-Com $record 'StringData' $getter @(1)) -split '\|')[-1])
+        $files.Add(($record.StringData(1) -split '\|')[-1])
     }
-    Invoke-Com $view 'Close' $method $null | Out-Null
-    $summary = Invoke-Com $database 'SummaryInformation' $getter @(0)
-    $facts['Template'] = Invoke-Com $summary 'Property' $getter @(7)
+    $view.Close()
+    $facts['Template'] = $database.SummaryInformation(0).Property(7)
 }
 finally {
-    foreach ($com in @($database, $installer)) { [void] [System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($com) }
+    foreach ($com in @($database, $installer)) { if ($com) { [void] [System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($com) } }
     [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
 }
 

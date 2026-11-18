@@ -163,7 +163,7 @@ Console.WriteLine(result is null ? "null" : result.Value ? "true" : "false");
 $createdSettings = $false
 $settingsFile = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'WinXCornersPlus\settings.json'
 try {
-    if ((Get-ArpEntries).Count -gt 0 -or (Test-Path -LiteralPath $installDir) -or (Get-AppProcesses).Count -gt 0) {
+    if (@(Get-ArpEntries).Count -gt 0 -or (Test-Path -LiteralPath $installDir) -or @(Get-AppProcesses).Count -gt 0) {
         throw 'WinXCornersPlus is already installed or running on this runner; the test needs a clean machine.'
     }
 
@@ -183,7 +183,7 @@ try {
     }
     $lnk = if (Test-Path -LiteralPath $shortcut) { (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut).TargetPath } else { $null }
     Add-Result '1 install' 'Start-menu shortcut points to the installed exe' ($lnk -ieq $installedExe) "$shortcut -> $lnk"
-    $arp = Get-ArpEntries
+    $arp = @(Get-ArpEntries)
     Add-Result '1 install' 'one Add/Remove Programs entry' ($arp.Count -eq 1) "$($arp.Count) entries"
     if ($arp.Count -ge 1) {
         $entry = $arp[0]
@@ -197,7 +197,7 @@ try {
     Add-Result '1 install' 'no autostart (Run) value was added' ($null -eq $runValue)
     Add-Result '1 install' 'no HKLM\SOFTWARE\WinXCornersPlus key was added' (-not (Test-Path 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WinXCornersPlus'))
     Add-Result '1 install' 'nothing added to PATH' (([Environment]::GetEnvironmentVariable('Path', 'Machine')) -notlike '*WinXCornersPlus*')
-    Add-Result '1 install' 'app not started by the installer' ((Get-AppProcesses).Count -eq 0)
+    Add-Result '1 install' 'app not started by the installer' (@(Get-AppProcesses).Count -eq 0)
 
     # ---- 2. ACL -------------------------------------------------------------------------------------------
     if (Test-Path -LiteralPath $installDir) {
@@ -238,7 +238,7 @@ try {
     $app = Start-AppAsStandardUser '4 upgrade'
     $run = Invoke-Msiexec '4-upgrade' @('/i', "`"$UpgradeMsi`"")
     Add-Result '4 upgrade' 'upgrade exits with 0 (no reboot: not 3010)' ($run.ExitCode -eq 0) "exit code $($run.ExitCode)"
-    $arp = Get-ArpEntries
+    $arp = @(Get-ArpEntries)
     Add-Result '4 upgrade' 'exactly one Add/Remove Programs entry' ($arp.Count -eq 1) "$($arp.Count) entries"
     Add-Result '4 upgrade' 'entry has the new version' ($arp.Count -eq 1 -and (Get-Value $arp[0] 'DisplayVersion') -eq $UpgradeProductVersion) `
         (($arp | ForEach-Object { Get-Value $_ 'DisplayVersion' }) -join ', ')
@@ -248,7 +248,7 @@ try {
         Add-Info '4 upgrade' 'how it was closed' $(if ($code -eq 0) { 'clean exit on WM_ENDSESSION (exit code 0)' } elseif ($code -eq 1) { 'terminated by the CloseApplication fallback (exit code 1)' } else { "exit code $code" })
         if ($null -eq $code) { $app.Kill($true) }
     }
-    Add-Result '4 upgrade' 'the app was not restarted by the installer' ((Get-AppProcesses).Count -eq 0)
+    Add-Result '4 upgrade' 'the app was not restarted by the installer' (@(Get-AppProcesses).Count -eq 0)
     Add-Result '4 upgrade' 'files still installed' (Test-Path -LiteralPath $installedExe)
     $rebootLines = @(($run.Text -split "`r?`n") | Where-Object { $_ -match 'RESTART MANAGER|ReplacedInUseFiles|reboot' } | Select-Object -First 12)
     Add-Info '4 upgrade' 'msiexec log, restart/reboot lines' ($rebootLines -join ' || ')
@@ -257,7 +257,7 @@ try {
     $run = Invoke-Msiexec '5-downgrade' @('/i', "`"$Msi`"")
     Add-Result '5 downgrade' 'older package is refused (exit 1603)' ($run.ExitCode -eq 1603) "exit code $($run.ExitCode)"
     Add-Result '5 downgrade' 'with the downgrade message' ([bool] ($run.Text -and $run.Text.Contains($downgradeText)))
-    $arp = Get-ArpEntries
+    $arp = @(Get-ArpEntries)
     Add-Result '5 downgrade' 'newer version still installed' ($arp.Count -eq 1 -and (Get-Value $arp[0] 'DisplayVersion') -eq $UpgradeProductVersion -and (Test-Path -LiteralPath $installedExe))
 
     # ---- 6. Uninstall while running -----------------------------------------------------------------------
@@ -282,17 +282,17 @@ try {
     }
     Add-Result '6 uninstall' 'program folder removed' (-not (Test-Path -LiteralPath $installDir))
     Add-Result '6 uninstall' 'Start-menu shortcut removed' (-not (Test-Path -LiteralPath $shortcut))
-    Add-Result '6 uninstall' 'Add/Remove Programs entry removed' ((Get-ArpEntries).Count -eq 0)
+    Add-Result '6 uninstall' 'Add/Remove Programs entry removed' (@(Get-ArpEntries).Count -eq 0)
     Add-Result '6 uninstall' 'HKLM\SOFTWARE\WinXCornersPlus removed' (-not (Test-Path 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WinXCornersPlus'))
     Add-Result '6 uninstall' 'HKCU Run value WinXCornersPlus removed' ($null -eq (Get-ItemProperty -LiteralPath $runKey -Name 'WinXCornersPlus' -ErrorAction SilentlyContinue))
     Add-Result '6 uninstall' "$settingsFile kept" (Test-Path -LiteralPath $settingsFile)
-    Add-Result '6 uninstall' 'no app process left' ((Get-AppProcesses).Count -eq 0)
+    Add-Result '6 uninstall' 'no app process left' (@(Get-AppProcesses).Count -eq 0)
 
     # ---- 7. Missing runtime ---------------------------------------------------------------------------------
     $run = Invoke-Msiexec '7-no-runtime' @('/i', "`"$NoRuntimeMsi`"")
     Add-Result '7 no runtime' 'install stops (exit 1603)' ($run.ExitCode -eq 1603) "exit code $($run.ExitCode)"
     Add-Result '7 no runtime' 'with the prerequisite message' ([bool] ($run.Text -and $run.Text.Contains($runtimeText)))
-    Add-Result '7 no runtime' 'nothing installed' (-not (Test-Path -LiteralPath $installDir) -and (Get-ArpEntries).Count -eq 0)
+    Add-Result '7 no runtime' 'nothing installed' (-not (Test-Path -LiteralPath $installDir) -and @(Get-ArpEntries).Count -eq 0)
     $check = @(($run.Text -split "`r?`n") | Where-Object { $_ -match 'NetCoreCheck|WXC_DOTNET_DESKTOP_CHECK' } | Select-Object -First 6)
     Add-Info '7 no runtime' 'detection' ($check -join ' || ')
 }
