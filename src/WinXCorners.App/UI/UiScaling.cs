@@ -32,9 +32,14 @@ internal sealed class UiScaling
     }
 
     /// <summary>Re-applies the captured layout for the current DPI; does nothing if the factor has not changed.</summary>
-    internal void Apply()
+    internal void Apply() => ApplyFactor(GetScaleFactor(_form));
+
+    /// <summary>
+    /// Re-applies the captured layout for an explicit factor; does nothing if it has not changed. <see cref="Apply"/>
+    /// passes the window's DPI; UI tests pass 1.25, 1.5 and 2.0 to check the layout on a 96-DPI test machine.
+    /// </summary>
+    internal void ApplyFactor(double factor)
     {
-        var factor = GetScaleFactor(_form);
         if (Math.Abs(factor - _factor) < 0.01)
         {
             return;

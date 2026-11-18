@@ -175,22 +175,8 @@ internal sealed class SecurityInfoForm : Form
         var px = _px;
         var width = ContentWidth();
 
-        AddSection("What WinXCornersPlus does", first: true);
-        foreach (var fact in SecurityPosture.Facts(context))
-        {
-            AddBullet(fact, width);
-        }
-
-        AddSection("Right now", first: false);
-        AddText($"Running as administrator: {YesNo(context.IsElevated)}", width, "elevatedLabel");
-        AddText("Program folder:", width, null, bottom: px(2));
-        AddValueBox(Show(context.Install.Directory), width, "programFolderBox");
-        AddText(context.Install.Explanation, width, "installExplanationLabel");
-        AddText("Settings file:", width, null, bottom: px(2));
-        AddValueBox(Show(context.SettingsPath), width, "settingsPathBox");
-        AddText($"Starts with Windows: {YesNo(context.StartsWithWindows)}", width, "startsWithWindowsLabel");
-
-        AddSection("Things to know", first: false);
+        // What needs attention comes first, so it is visible without scrolling; the background follows.
+        AddSection("Things to know", first: true);
         var risks = SecurityPosture.Evaluate(settings, context);
         if (risks.Count == 0)
         {
@@ -206,6 +192,21 @@ internal sealed class SecurityInfoForm : Form
             {
                 _widthTracked.Add((label, indent));
             }
+        }
+
+        AddSection("Right now", first: false);
+        AddText($"Running as administrator: {YesNo(context.IsElevated)}", width, "elevatedLabel");
+        AddText("Program folder:", width, null, bottom: px(2));
+        AddValueBox(Show(context.Install.Directory), width, "programFolderBox", "Program folder");
+        AddText(context.Install.Explanation, width, "installExplanationLabel");
+        AddText("Settings file:", width, null, bottom: px(2));
+        AddValueBox(Show(context.SettingsPath), width, "settingsPathBox", "Settings file");
+        AddText($"Starts with Windows: {YesNo(context.StartsWithWindows)}", width, "startsWithWindowsLabel");
+
+        AddSection("What WinXCornersPlus does", first: false);
+        foreach (var fact in SecurityPosture.Facts(context))
+        {
+            AddBullet(fact, width);
         }
     }
 
@@ -247,22 +248,36 @@ internal sealed class SecurityInfoForm : Form
         _widthTracked.Add((label, _px(16)));
     }
 
-    // Paths go in a read-only text box rather than a label: a label cannot break a path that has no spaces,
-    // and the user may want to select and copy it.
-    private void AddValueBox(string text, int width, string name)
+    // Paths go in a read-only text box rather than a label, so the user can select and copy them. It wraps (a long
+    // path has no spaces, so it breaks between characters) and is as tall as its text, so nothing is cut off.
+    private void AddValueBox(string text, int width, string name, string accessibleName)
     {
         var box = new TextBox
         {
             Name = name,
+            AccessibleName = accessibleName,
             Text = text,
             ReadOnly = true,
+            Multiline = true,
+            WordWrap = true,
+            ScrollBars = ScrollBars.None,
             BorderStyle = BorderStyle.None,
             BackColor = BackColor,
             ForeColor = ThemeHelper.Colors.GetForegroundColor(),
             Width = width
         };
+        FitValueBoxHeight(box);
         DialogLayout.AddRow(_content, box, new Padding(0, 0, 0, _px(8)));
         _widthTracked.Add((box, 0));
+    }
+
+    private static void FitValueBoxHeight(TextBox box)
+    {
+        // The edit control keeps a few pixels of margin on each side, so it wraps a little narrower than its width.
+        var measured = TextRenderer.MeasureText(box.Text.Length == 0 ? " " : box.Text, box.Font,
+            new Size(Math.Max(1, box.Width - 8), int.MaxValue),
+            TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix);
+        box.Height = measured.Height + 2;
     }
 
     private int ContentWidth()
@@ -285,6 +300,10 @@ internal sealed class SecurityInfoForm : Form
             else
             {
                 control.Width = available;
+                if (control is TextBox box)
+                {
+                    FitValueBoxHeight(box);
+                }
             }
         }
     }

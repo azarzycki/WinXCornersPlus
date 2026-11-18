@@ -79,15 +79,20 @@ internal sealed class AdvancedForm : Form
     private int _selectedCommandIndex = -1;
     private SecurityInfoForm? _securityInfo;
 
-    internal AdvancedForm(IAppHost host)
+    /// <param name="host">The platform layer.</param>
+    /// <param name="confirmRisk">Replaces <see cref="ConfirmRisk"/> from the start, so tests can prove that loading prompts nothing.</param>
+    /// <param name="showMessage">Replaces <see cref="ShowMessage"/> from the start.</param>
+    internal AdvancedForm(IAppHost host,
+        Func<IWin32Window?, string, string, IReadOnlyList<RiskItem>, string, bool>? confirmRisk = null,
+        Action<string, string>? showMessage = null)
     {
         ArgumentNullException.ThrowIfNull(host);
         _host = host;
         _workingCopy = host.Settings.Snapshot();
-        ConfirmRisk = (owner, title, heading, items, confirmText) =>
-            RiskDialog.Confirm(owner, title, heading, items, confirmText);
-        ShowMessage = (title, text) =>
-            MessageBox.Show(this, text, title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        ConfirmRisk = confirmRisk ?? ((owner, title, heading, items, confirmText) =>
+            RiskDialog.Confirm(owner, title, heading, items, confirmText));
+        ShowMessage = showMessage ?? ((title, text) =>
+            MessageBox.Show(this, text, title, MessageBoxButtons.OK, MessageBoxIcon.Warning));
         HandleCreated += (_, _) => ThemeHelper.ApplyNativeWindowTheme(Handle);
 
         Name = "advancedForm";
@@ -212,10 +217,9 @@ internal sealed class AdvancedForm : Form
         _cbBottomRightDelay = CreateDelayCombo("bottomRightDelayComboBox", new Point(DelayPanelRightComboX, DelayPanelSecondRowY - 3));
         _chkShowCountdown = CreateCheckBox("showCountdownCheckBox", "Show Countdown", new Point(16, DelayPanelFooterRowY));
 
+        // Reading (and Tab) order: the corner rows, then the global delay below them, then the countdown.
         _delayPanel.Controls.AddRange(
         [
-            _chkGlobalDelay,
-            _cbGlobalDelay,
             _chkTopLeftDelay,
             _cbTopLeftDelay,
             _chkTopRightDelay,
@@ -224,6 +228,8 @@ internal sealed class AdvancedForm : Form
             _cbBottomLeftDelay,
             _chkBottomRightDelay,
             _cbBottomRightDelay,
+            _chkGlobalDelay,
+            _cbGlobalDelay,
             _chkShowCountdown
         ]);
 
@@ -313,9 +319,25 @@ internal sealed class AdvancedForm : Form
             _chkLaunchHidden
         ]);
 
+        // Screen readers name an edit box or combo box after its accessible name; the captions beside them are
+        // separate labels, so the names are set here.
+        _txtCommandName.AccessibleName = "Custom command name";
+        _txtCommand.AccessibleName = "Command path or hotkey sequence";
+        _txtParameters.AccessibleName = "Parameters";
+        _cbGlobalDelay.AccessibleName = "Global delay in seconds";
+        _cbTopLeftDelay.AccessibleName = "Top Left delay in seconds";
+        _cbTopRightDelay.AccessibleName = "Top Right delay in seconds";
+        _cbBottomLeftDelay.AccessibleName = "Bottom Left delay in seconds";
+        _cbBottomRightDelay.AccessibleName = "Bottom Right delay in seconds";
+        _cbFlyoutAnimationDirection.AccessibleName = "Flyout animation direction";
+        _cbHotCornerModifierKey.AccessibleName = "Hot Corners modifier key";
+
         AcceptButton = btnOk;
         CancelButton = btnCancel;
-        Controls.AddRange([updatesLink, securityLink, btnOk, _btnApply, btnCancel, topTabsHost, topSectionHost, tabsHost, customPanel]);
+        // Added in reading order, which is also the Tab order: the settings first, then the footer links and buttons
+        // (Apply, OK, Cancel as they appear). With the links first, a link got the initial focus and Enter opened the
+        // browser instead of pressing OK.
+        Controls.AddRange([topTabsHost, topSectionHost, tabsHost, customPanel, updatesLink, securityLink, _btnApply, btnOk, btnCancel]);
 
         _scaling = new UiScaling(this);
         _scaling.Apply();
@@ -342,6 +364,9 @@ internal sealed class AdvancedForm : Form
 
     /// <summary>True when there are edits that have not been applied.</summary>
     internal bool HasPendingChanges => _isDirty;
+
+    /// <summary>The hand-placed layout's scaler; UI tests use it to simulate higher DPI.</summary>
+    internal UiScaling Scaling => _scaling;
 
     internal void PositionNearTaskbarTray()
     {
@@ -804,7 +829,8 @@ internal sealed class AdvancedForm : Form
 
     private static ComboBox CreateCombo(string name, Point location, Size size)
     {
-        return new ComboBox
+        var light = ThemeHelper.IsLightTheme;
+        var combo = new ComboBox
         {
             Name = name,
             Location = location,
@@ -812,8 +838,17 @@ internal sealed class AdvancedForm : Form
             DropDownStyle = ComboBoxStyle.DropDownList,
             BackColor = ThemeHelper.Colors.GetControlBackgroundColor(),
             ForeColor = ThemeHelper.Colors.GetForegroundColor(),
-            FlatStyle = FlatStyle.Flat
+            // A flat combo box always draws a light drop-down button; in dark mode the themed one is used instead,
+            // with the system's dark combo box theme (as the File dialog uses).
+            FlatStyle = light ? FlatStyle.Flat : FlatStyle.Standard
         };
+
+        if (!light)
+        {
+            combo.HandleCreated += static (sender, args) => _ = NativeMethods.SetWindowTheme(((Control)sender!).Handle, "DarkMode_CFD", null);
+        }
+
+        return combo;
     }
 
     private static ComboBox CreateDelayCombo(string name, Point location)

@@ -309,7 +309,19 @@ internal sealed class FlyoutForm : Form
 
     private void AddCornerButton(HotCornerArea area, string name)
     {
-        var button = new FlyoutActionControl { Name = name };
+        // The button shows only the action ("Task View", or nothing for None), so screen readers need the corner.
+        var button = new FlyoutActionControl
+        {
+            Name = name,
+            AccessibleName = area switch
+            {
+                HotCornerArea.TopLeft => "Top-left corner action",
+                HotCornerArea.TopRight => "Top-right corner action",
+                HotCornerArea.BottomLeft => "Bottom-left corner action",
+                _ => "Bottom-right corner action"
+            },
+            AccessibleRole = AccessibleRole.PushButton
+        };
         button.Click += (_, _) => OpenCornerMenu(area);
         _cornerButtons[area] = button;
         Controls.Add(button);

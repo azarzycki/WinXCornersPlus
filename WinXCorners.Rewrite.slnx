@@ -5,6 +5,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/WinXCorners.App.Tests/WinXCorners.App.Tests.csproj" />
+    <Project Path="tests/WinXCorners.App.UiTests/WinXCorners.App.UiTests.csproj" />
     <Project Path="tests/WinXCorners.Core.Tests/WinXCorners.Core.Tests.csproj" />
   </Folder>
 </Solution>

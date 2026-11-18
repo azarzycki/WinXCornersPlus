@@ -131,11 +131,20 @@ internal static class DialogLayout
         int scrollBarWidth, string name, Func<int, int> px)
     {
         var text = string.Join(Environment.NewLine, lines);
-        var measured = TextRenderer.MeasureText(text.Length == 0 ? " " : text, font,
-            new Size(Math.Max(1, width - scrollBarWidth - px(8)), int.MaxValue),
-            TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix);
-        var wanted = measured.Height + px(8);
+
+        // Measured at the width the edit control wraps at (its border and inner margins take about 10 px); the
+        // scroll bar's width is taken off only when the text does not fit and a scroll bar will be shown.
+        int Measure(int wrapWidth) => TextRenderer.MeasureText(text.Length == 0 ? " " : text, font,
+            new Size(Math.Max(1, wrapWidth), int.MaxValue),
+            TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix).Height + px(8);
+
+        var wanted = Measure(width - px(10));
         var scrolls = wanted > maxHeight;
+        if (scrolls)
+        {
+            wanted = Measure(width - px(10) - scrollBarWidth);
+        }
+
         return new TextBox
         {
             Name = name,
