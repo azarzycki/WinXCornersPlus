@@ -64,10 +64,15 @@ internal static class Screenshot
 
         try
         {
-            using var screen = CopyFromScreen(form);
-            if (!IsBlank(screen))
+            // PrintWindow with PW_RENDERFULLCONTENT renders the window as DWM composes it (dark title bar, rounded
+            // corners) without depending on what is on top of it; the Windows 11 ARM64 runner's screen copies do
+            // not show application windows at all. A plain screen copy is the fallback.
+            using var composed = PrintWindowImage(form);
+            using var screen = composed is null || IsBlank(composed) ? CopyFromScreen(form) : null;
+            var image = screen ?? composed;
+            if (image is not null && !IsBlank(image))
             {
-                screen.Save(Path.Combine(directory, name + ".screen.png"), ImageFormat.Png);
+                image.Save(Path.Combine(directory, name + ".screen.png"), ImageFormat.Png);
             }
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or ExternalException)
@@ -89,6 +94,39 @@ internal static class Screenshot
         }
 
         return form.Bounds;
+    }
+
+    private static Bitmap? PrintWindowImage(Form form)
+    {
+        if (!GetWindowRect(form.Handle, out var window))
+        {
+            return null;
+        }
+
+        var width = Math.Max(1, window.Right - window.Left);
+        var height = Math.Max(1, window.Bottom - window.Top);
+        using var full = new Bitmap(width, height);
+        using (var graphics = Graphics.FromImage(full))
+        {
+            var hdc = graphics.GetHdc();
+            try
+            {
+                if (!PrintWindow(form.Handle, hdc, PwRenderFullContent))
+                {
+                    return null;
+                }
+            }
+            finally
+            {
+                graphics.ReleaseHdc(hdc);
+            }
+        }
+
+        // Crop the invisible resize borders, as the user sees the window.
+        var visible = VisibleBounds(form);
+        var crop = Rectangle.Intersect(new Rectangle(0, 0, width, height),
+            new Rectangle(visible.Left - window.Left, visible.Top - window.Top, visible.Width, visible.Height));
+        return crop.Width > 0 && crop.Height > 0 ? full.Clone(crop, full.PixelFormat) : null;
     }
 
     private static Bitmap CopyFromScreen(Form form)
@@ -130,6 +168,16 @@ internal static class Screenshot
         public int Right;
         public int Bottom;
     }
+
+    private const uint PwRenderFullContent = 0x00000002;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out Rect value, int size);
