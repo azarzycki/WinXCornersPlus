@@ -210,6 +210,17 @@ public sealed class ProcessLauncherTests : IDisposable
             throw new SkipException("No desktop shell (explorer.exe) in this session: only the fail-closed half was verified.");
         }
 
+        if (!launched && error is not null && error.Contains("(0x00000001)", StringComparison.Ordinal))
+        {
+            // explorer.exe answered IShellWindows.FindWindowSW with S_FALSE: it runs, but no desktop view is registered
+            // in this session (seen on the windows-11-arm image). The launcher must then fail closed.
+            Thread.Sleep(3000);
+            Assert.False(File.Exists(marker), "Something was started although the shell had no desktop to launch from.");
+            throw new SkipException(
+                "explorer.exe runs but has not registered a desktop view with IShellWindows (S_FALSE) in this session; " +
+                "only the fail-closed half was verified.");
+        }
+
         Assert.True(launched, error);
         var text = Poll.WaitForFile(marker, ChildTimeout);
         Assert.NotNull(text);
