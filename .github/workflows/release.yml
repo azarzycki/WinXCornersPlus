@@ -1,0 +1,660 @@
+# Release pipeline. See docs/RELEASING.md (and docs/INSTALLING.md for the installer).
+#
+# What a run is decided by build/release/ReleaseTools.psm1 (Test-IsRealRelease), never by anything else:
+#   workflow_dispatch on master, dry_run unticked      -> REAL release: tag v<version> + GitHub Release
+#   push to master, repository variable RELEASE_ON_PUSH == 'true' -> REAL release (opt-in, off by default)
+#   push to master without that opt-in                 -> dry run (merging never publishes by surprise)
+#   push to hardening/**, manual runs on other branches -> dry run
+# A dry run builds, tests and uploads everything as workflow artifacts; it never tags, publishes, attests or signs.
+#
+# Jobs: script tests + CI gate + UI-test gate | version -> build+smoke (x64, arm64) -> [sign app] -> zip + MSI -> [sign MSI]
+#       -> installer tests (x64, arm64) -> checksums + notes -> publish (real releases only, needs both gates).
+# The [sign] jobs run only on real releases of a repository configured for SignPath or Azure Artifact Signing.
+# Version = git tags + commit messages + the csproj <Version> floor. Nothing is ever committed back.
+name: Release
+
+on:
+  push:
+    branches: [master, 'hardening/**']
+    paths:
+      - 'src/**'
+      - 'Directory.Build.props'
+      - 'build/release/**'
+      - 'installer/**'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump (auto = from commit messages)'
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      prerelease:
+        description: 'Publish as a prerelease (X.Y.Z-rc.<run number>)'
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run: build and test only, do not tag or publish (untick on master to release)'
+        type: boolean
+        default: true
+
+# Every job asks for exactly what it needs.
+permissions: {}
+
+# One release at a time per branch; a running release is never cancelled (a newer push waits).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  PROJECT: src/WinXCorners.App/WinXCorners.App.csproj
+
+jobs:
+  script-tests:
+    name: Release script tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pester
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable Pester | Where-Object Version -ge ([version]'5.0.0'))) {
+            Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck
+          }
+          # The workflow test (ReleaseWorkflow.Tests.ps1) parses this file.
+          Install-Module powershell-yaml -RequiredVersion 0.4.12 -Scope CurrentUser -Force
+          Import-Module Pester -MinimumVersion 5.0.0
+          Write-Host "Pester $((Get-Module Pester).Version) on PowerShell $($PSVersionTable.PSVersion)"
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'build/release'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config
+
+  gate:
+    name: Gate
+    needs: script-tests
+    permissions:
+      contents: read
+    # The full CI pipeline. A real release is never published unless it passed (the publish job needs it).
+    # Packaging and installer tests do not wait for it, so a dry run also shows them while CI is red.
+    uses: ./.github/workflows/ci.yml
+
+  gate-ui:
+    name: Gate (UI tests)
+    needs: script-tests
+    permissions:
+      contents: read
+    # Every window rendered and checked on three Windows images. Same rule as the CI gate: a real release is
+    # never published unless it passed.
+    uses: ./.github/workflows/ui-tests.yml
+
+  version:
+    name: Compute version
+    needs: script-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      tag: ${{ steps.compute.outputs.tag }}
+      numeric_version: ${{ steps.compute.outputs.numeric_version }}
+      prerelease: ${{ steps.compute.outputs.prerelease }}
+      dry_run: ${{ steps.mode.outputs.dry_run }}
+      signing_provider: ${{ steps.signing.outputs.provider }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # all history and tags: the version is derived from them
+          persist-credentials: false
+      - name: Dry run or real release
+        id: mode
+        shell: pwsh
+        # Inputs reach scripts only through env, never through ${{ }} inside the script text.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          RELEASE_ON_PUSH: ${{ vars.RELEASE_ON_PUSH }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module ./build/release/ReleaseTools.psm1
+          $real = Test-IsRealRelease -EventName $env:EVENT_NAME -Ref $env:GIT_REF -DryRunInput $env:INPUT_DRY_RUN -ReleaseOnPush $env:RELEASE_ON_PUSH
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "dry_run=$((-not $real).ToString().ToLowerInvariant())"
+          $mode = if ($real) { '**Real release**: tag and GitHub Release will be created.' }
+                  elseif ($env:EVENT_NAME -eq 'push' -and $env:GIT_REF -eq 'refs/heads/master') {
+                    '**Dry run** (push to master; repository variable `RELEASE_ON_PUSH` is not `true`). To publish this version, run this workflow manually on master with *dry_run* unticked.' }
+                  else { '**Dry run**: nothing will be tagged, signed or published.' }
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $mode, ''
+      - name: Compute next version
+        id: compute
+        shell: pwsh
+        env:
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          ./build/release/Get-ReleaseVersion.ps1 -ProjectFile $env:PROJECT -Bump $env:INPUT_BUMP `
+            -Prerelease:($env:INPUT_PRERELEASE -eq 'true') -RunNumber ([int] $env:RUN_NUMBER)
+      - name: Decide code signing
+        id: signing
+        shell: pwsh
+        # Only whether each setting is present is passed on ('true'/'false'); secret values never reach the script.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DRY_RUN: ${{ steps.mode.outputs.dry_run }}
+          CODE_SIGNING_PROVIDER: ${{ vars.CODE_SIGNING_PROVIDER }}
+          HAS_SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+          HAS_SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG != '' }}
+          HAS_SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG != '' }}
+          HAS_SIGNPATH_APP_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_APP_ARTIFACT_CONFIGURATION_SLUG != '' }}
+          HAS_SIGNPATH_INSTALLER_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_INSTALLER_ARTIFACT_CONFIGURATION_SLUG != '' }}
+          HAS_SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+          HAS_AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID != '' }}
+          HAS_AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID != '' }}
+          HAS_AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID != '' }}
+          HAS_AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT != '' }}
+          HAS_AZURE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME != '' }}
+          HAS_AZURE_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_CERTIFICATE_PROFILE_NAME != '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module ./build/release/ReleaseTools.psm1
+          $configured = @(Get-ChildItem env:HAS_* | Where-Object Value -eq 'true' | ForEach-Object { $_.Name.Substring(4) })
+          $plan = Get-CodeSigningPlan -Provider $env:CODE_SIGNING_PROVIDER -Configured $configured `
+            -IsRealRelease:($env:DRY_RUN -eq 'false') -EventName $env:EVENT_NAME
+          Write-Host $plan.Note
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "provider=$($plan.Provider)"
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "**Code signing:** $($plan.Note)", ''
+
+  build:
+    name: Build and smoke-test (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish (win-${{ matrix.arch }}, framework-dependent)
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.version.outputs.version }}
+          NUMERIC_VERSION: ${{ needs.version.outputs.numeric_version }}
+        # All four version properties are stamped here, so the csproj may carry either a single
+        # <Version> or the old explicit Assembly/File/InformationalVersion: the command line wins.
+        run: |
+          dotnet publish src/WinXCorners.App -c Release -r "win-$env:ARCH" --self-contained false -o publish `
+            "-p:Version=$env:VERSION" "-p:AssemblyVersion=$env:NUMERIC_VERSION" `
+            "-p:FileVersion=$env:NUMERIC_VERSION" "-p:InformationalVersion=$env:VERSION" `
+            -p:ContinuousIntegrationBuild=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify version stamp and stage the payload
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          NUMERIC_VERSION: ${{ needs.version.outputs.numeric_version }}
+        run: ./build/release/New-ReleasePayload.ps1 -PublishDirectory publish -PayloadDirectory payload -Version $env:VERSION -NumericVersion $env:NUMERIC_VERSION
+      - name: Smoke test on this runner
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: ./build/release/Test-PublishedApp.ps1 -Executable payload/WinXCornersPlus.exe -Architecture $env:ARCH
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-${{ matrix.arch }}
+          path: payload/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---- Optional code signing, stage 1: the program files, before they are zipped or put in an MSI. ----------
+  # Separate jobs, so the signing credentials never share a runner with the build (NuGet restore, compilers).
+  # Runs only on a real release of a repository configured for a provider (Get-CodeSigningPlan): never on a
+  # pull request, never on a dry run.
+  sign-app:
+    name: Code signing - program files (${{ matrix.arch }})
+    needs: [version, build]
+    if: needs.version.outputs.signing_provider != 'none' && needs.version.outputs.dry_run == 'false' && github.event_name != 'pull_request'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read   # SignPath reads this run's artifact and job details
+      id-token: write # Azure: OpenID Connect login, no stored password
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [x64, arm64]
+    env:
+      PROVIDER: ${{ needs.version.outputs.signing_provider }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app-${{ matrix.arch }}
+          path: unsigned
+      - name: SignPath - hand the unsigned files over
+        id: signpath-upload
+        if: env.PROVIDER == 'signpath'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-app-${{ matrix.arch }}
+          path: unsigned/
+          if-no-files-found: error
+          retention-days: 1
+      - name: SignPath - sign
+        if: env.PROVIDER == 'signpath'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_APP_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.signpath-upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+      - name: Azure - log in (OpenID Connect)
+        if: env.PROVIDER == 'azure'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Azure - copy the files to sign
+        if: env.PROVIDER == 'azure'
+        shell: pwsh
+        run: Copy-Item -Path unsigned -Destination signed -Recurse
+      - name: Azure - sign
+        if: env.PROVIDER == 'azure'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CERTIFICATE_PROFILE_NAME }}
+          files-folder: ${{ github.workspace }}\signed
+          files-folder-filter: exe,dll
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify every signature
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module ./build/release/ReleaseFiles.psm1
+          $subject = if ($env:PROVIDER -eq 'signpath') { 'SignPath Foundation' } else { '' }
+          Assert-AuthenticodeSigned -Directory signed -ExpectedSubject $subject
+          # Signing may change nothing but the signatures: same files, same names.
+          $before = @(Get-ChildItem unsigned -Recurse -File | ForEach-Object { [IO.Path]::GetRelativePath("$PWD/unsigned", $_.FullName) } | Sort-Object)
+          $after = @(Get-ChildItem signed -Recurse -File | ForEach-Object { [IO.Path]::GetRelativePath("$PWD/signed", $_.FullName) } | Sort-Object)
+          if (($before -join '|') -cne ($after -join '|')) { throw "Signing changed the file list: $($after -join ', ')" }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-${{ matrix.arch }}-signed
+          path: signed/
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    name: Zip and MSI (${{ matrix.arch }})
+    needs: [version, build, sign-app]
+    # Runs after the signing stage, or when the signing stage was skipped because this run does not sign.
+    if: >-
+      !cancelled() && needs.build.result == 'success' &&
+      (needs.sign-app.result == 'success' || (needs.sign-app.result == 'skipped' && needs.version.outputs.signing_provider == 'none'))
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    env:
+      ARCH: ${{ matrix.arch }}
+      VERSION: ${{ needs.version.outputs.version }}
+      NUMERIC_VERSION: ${{ needs.version.outputs.numeric_version }}
+      PROVIDER: ${{ needs.version.outputs.signing_provider }}
+      PROJECT_URL: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.version.outputs.signing_provider != 'none' && format('app-{0}-signed', matrix.arch) || format('app-{0}', matrix.arch) }}
+          path: payload
+      - name: Verify signatures of the program files
+        if: env.PROVIDER != 'none'
+        shell: pwsh
+        run: |
+          Import-Module ./build/release/ReleaseFiles.psm1
+          Assert-AuthenticodeSigned -Directory payload
+      - name: Zip
+        shell: pwsh
+        run: ./build/release/New-ReleasePackage.ps1 -PayloadDirectory payload -OutputDirectory dist -Version $env:VERSION -NumericVersion $env:NUMERIC_VERSION -Architecture $env:ARCH
+      - name: Build the MSI
+        shell: pwsh
+        run: ./build/release/New-ReleaseInstaller.ps1 -PayloadDirectory payload -OutputDirectory dist -Version $env:VERSION -Architecture $env:ARCH -ProjectUrl $env:PROJECT_URL
+      - name: Build the test-only MSIs (higher version; unmet .NET prerequisite)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module ./build/release/ReleaseTools.psm1
+          $parts = (ConvertTo-MsiProductVersion $env:VERSION).Split('.')
+          $upgrade = '{0}.{1}.{2}' -f $parts[0], $parts[1], ([int] $parts[2] + 1)
+          ./build/release/New-ReleaseInstaller.ps1 -PayloadDirectory payload -OutputDirectory test-msi -Version $env:VERSION -Architecture $env:ARCH `
+            -ProjectUrl $env:PROJECT_URL -OutputName "test-upgrade-$env:ARCH" -ProductVersion $upgrade
+          ./build/release/New-ReleaseInstaller.ps1 -PayloadDirectory payload -OutputDirectory test-msi -Version $env:VERSION -Architecture $env:ARCH `
+            -ProjectUrl $env:PROJECT_URL -OutputName "test-noruntime-$env:ARCH" -DotNetCheckVersion 99.0.0
+          Set-Content -LiteralPath test-msi/upgrade-version.txt -Value $upgrade -NoNewline
+          Copy-Item -Path payload -Destination test-msi/payload -Recurse
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-${{ matrix.arch }}
+          path: |
+            dist/*.zip
+            dist/*.msi
+          if-no-files-found: error
+          retention-days: ${{ needs.version.outputs.dry_run == 'true' && 14 || 90 }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installer-test-inputs-${{ matrix.arch }}
+          path: test-msi/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---- Optional code signing, stage 2: the MSIs (their content was signed in stage 1). ---------------------
+  sign-installer:
+    name: Code signing - installer (${{ matrix.arch }})
+    needs: [version, package]
+    if: >-
+      !cancelled() && needs.package.result == 'success' &&
+      needs.version.outputs.signing_provider != 'none' && needs.version.outputs.dry_run == 'false' && github.event_name != 'pull_request'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [x64, arm64]
+    env:
+      PROVIDER: ${{ needs.version.outputs.signing_provider }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-${{ matrix.arch }}
+          path: dist
+      - name: Separate the MSI
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path unsigned | Out-Null
+          Move-Item -Path dist/*.msi -Destination unsigned
+      - name: SignPath - hand the unsigned MSI over
+        id: signpath-upload
+        if: env.PROVIDER == 'signpath'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-installer-${{ matrix.arch }}
+          path: unsigned/
+          if-no-files-found: error
+          retention-days: 1
+      - name: SignPath - sign
+        if: env.PROVIDER == 'signpath'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_INSTALLER_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.signpath-upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+      - name: Azure - log in (OpenID Connect)
+        if: env.PROVIDER == 'azure'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Azure - copy the files to sign
+        if: env.PROVIDER == 'azure'
+        shell: pwsh
+        run: Copy-Item -Path unsigned -Destination signed -Recurse
+      - name: Azure - sign
+        if: env.PROVIDER == 'azure'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CERTIFICATE_PROFILE_NAME }}
+          files-folder: ${{ github.workspace }}\signed
+          files-folder-filter: msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify every signature
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module ./build/release/ReleaseFiles.psm1
+          $subject = if ($env:PROVIDER -eq 'signpath') { 'SignPath Foundation' } else { '' }
+          Assert-AuthenticodeSigned -Directory signed -ExpectedSubject $subject
+          $names = @(Get-ChildItem signed -File | ForEach-Object Name | Sort-Object)
+          $expected = @(Get-ChildItem unsigned -File | ForEach-Object Name | Sort-Object)
+          if (($names -join '|') -cne ($expected -join '|')) { throw "Signing changed the file list: $($names -join ', ')" }
+          Move-Item -Path signed/*.msi -Destination dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-${{ matrix.arch }}-signed
+          path: |
+            dist/*.zip
+            dist/*.msi
+          if-no-files-found: error
+          retention-days: 90
+
+  installer-tests:
+    name: Installer tests (${{ matrix.arch }})
+    needs: [version, package, sign-installer]
+    if: >-
+      !cancelled() && needs.package.result == 'success' &&
+      (needs.sign-installer.result == 'success' || (needs.sign-installer.result == 'skipped' && needs.version.outputs.signing_provider == 'none'))
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    env:
+      ARCH: ${{ matrix.arch }}
+      VERSION: ${{ needs.version.outputs.version }}
+      PROJECT_URL: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The .NET 10 runtime the installed app needs, and the SDK for the probe helper.
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.version.outputs.signing_provider != 'none' && format('package-{0}-signed', matrix.arch) || format('package-{0}', matrix.arch) }}
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: installer-test-inputs-${{ matrix.arch }}
+          path: test-msi
+      - name: Install, inspect, upgrade, downgrade, uninstall, missing runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module ./build/release/ReleaseTools.psm1
+          $msi = Join-Path dist (Get-ReleaseAssetName -Kind msi -Architecture $env:ARCH -Version $env:VERSION)
+          ./installer/Test-Installer.ps1 -Msi $msi -UpgradeMsi "test-msi/test-upgrade-$env:ARCH.msi" `
+            -NoRuntimeMsi "test-msi/test-noruntime-$env:ARCH.msi" -PayloadDirectory test-msi/payload -Architecture $env:ARCH `
+            -ProductVersion (ConvertTo-MsiProductVersion $env:VERSION) -UpgradeProductVersion (Get-Content -Raw test-msi/upgrade-version.txt) `
+            -ProjectUrl $env:PROJECT_URL -LogDirectory installer-logs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: installer-test-logs-${{ matrix.arch }}
+          path: installer-logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  notes:
+    name: Checksums and release notes
+    needs: [version, package, sign-installer, installer-tests]
+    if: >-
+      !cancelled() && needs.installer-tests.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      SIGNED: ${{ needs.version.outputs.signing_provider != 'none' && '-signed' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The final files: signed when this run signs. Checksums and attestations are computed over these.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-x64${{ env.SIGNED }}
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-arm64${{ env.SIGNED }}
+          path: dist
+      - name: Checksums and notes
+        shell: pwsh
+        env:
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          PROVIDER: ${{ needs.version.outputs.signing_provider }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./build/release/New-ReleaseChecksums.ps1 -Directory dist -Version $env:VERSION
+          ./build/release/Confirm-ReleaseChecksums.ps1 -Directory dist
+          $signedBy = if ($env:PROVIDER -eq 'none') { '' } else { $env:PROVIDER }
+          ./build/release/New-ReleaseNotes.ps1 -Directory dist -Version $env:VERSION -Repository $env:REPOSITORY -ServerUrl $env:SERVER_URL `
+            -SignedBy $signedBy -OutputFile release-notes.md -Prerelease:($env:PRERELEASE -eq 'true')
+          $files = Get-ChildItem dist -File | Sort-Object Name | ForEach-Object { '| `{0}` | {1:N0} |' -f $_.Name, $_.Length }
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value (@('## Release files', '', '| File | Bytes |', '|---|---|') + $files + @(''))
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value '## Release notes preview', '', (Get-Content -Raw release-notes.md)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: WinXCornersPlus-${{ needs.version.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: ${{ needs.version.outputs.dry_run == 'true' && 14 || 90 }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: [version, gate, gate-ui, notes]
+    # Real releases only, and only when every needed job - including both gates - succeeded.
+    if: needs.version.outputs.dry_run == 'false' && needs.gate.result == 'success' && needs.gate-ui.result == 'success' && needs.notes.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write     # create the tag and the release
+      id-token: write     # sign the provenance attestation (Sigstore)
+      attestations: write # store the attestation
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: WinXCornersPlus-${{ needs.version.outputs.version }}
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: notes
+      - name: Verify checksums
+        working-directory: dist
+        run: sha256sum --check --strict SHA256SUMS.txt
+      - name: Refuse an existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent 2>err.txt; then
+            echo "::error::Tag $TAG already exists; nothing was published."; exit 1
+          fi
+          grep -q 'HTTP 404' err.txt || { cat err.txt; exit 1; }
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.zip
+            dist/*.msi
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          # --target creates the tag on exactly the commit that was built and tested.
+          gh release create "$TAG" dist/*.msi dist/*.zip dist/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "WinXCornersPlus $VERSION" --notes-file notes/release-notes.md --generate-notes \
+            "${flags[@]}"

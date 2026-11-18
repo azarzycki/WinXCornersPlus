@@ -1,0 +1,37 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+  <!--
+    The Windows Installer package (MSI) for WinXCornersPlus. See docs/INSTALLING.md and docs/RELEASING.md.
+    Built by build/release/New-ReleaseInstaller.ps1 on Windows; WiX is restored from NuGet, nothing is preinstalled.
+
+    Properties (all passed on the command line by the release workflow):
+      InstallerPlatform  x64 or arm64
+      ProductVersion     MAJOR.MINOR.PATCH (MSI versions are numeric; prerelease suffixes are dropped)
+      PayloadDir         the folder whose files are installed (the same files as the zip)
+      ProjectUrl         shown as the Add/Remove Programs support link
+      DotNetCheckVersion the .NET Desktop Runtime version that must be present (10.0.0; tests raise it to
+                         simulate a machine without the runtime)
+  -->
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <OutputName Condition="'$(OutputName)' == ''">WinXCornersPlus</OutputName>
+    <InstallerPlatform Condition="'$(InstallerPlatform)' == ''">x64</InstallerPlatform>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.0.1</ProductVersion>
+    <PayloadDir Condition="'$(PayloadDir)' == ''">$(MSBuildThisFileDirectory)..\publish</PayloadDir>
+    <ProjectUrl Condition="'$(ProjectUrl)' == ''">https://github.com/Asteski/WinXCornersPlus</ProjectUrl>
+    <DotNetCheckVersion Condition="'$(DotNetCheckVersion)' == ''">10.0.0</DotNetCheckVersion>
+    <DefineConstants>ProductVersion=$(ProductVersion);PayloadDir=$(PayloadDir);ProjectUrl=$(ProjectUrl);DotNetCheckVersion=$(DotNetCheckVersion);IconFile=$(MSBuildThisFileDirectory)..\assets\app.ico</DefineConstants>
+    <!--
+      ICE61: AllowSameVersionUpgrades is deliberate, so a final release replaces its release candidate in place.
+      ICE43/ICE57: they assume ProgramMenuFolder may be per-user and want an HKCU key path for the shortcut. The
+      package is always per-machine (ALLUSERS=1, Scope="perMachine"), so the shortcut goes to the all-users Start
+      menu and belongs with the exe; an HKCU key path would write into the installing user's profile for nothing.
+    -->
+    <SuppressIces>ICE61;ICE43;ICE57</SuppressIces>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" Version="6.0.2" />
+    <PackageReference Include="WixToolset.Netfx.wixext" Version="6.0.2" />
+    <PackageReference Include="WixToolset.UI.wixext" Version="6.0.2" />
+  </ItemGroup>
+</Project>

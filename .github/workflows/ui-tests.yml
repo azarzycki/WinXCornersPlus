@@ -13,7 +13,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ui-tests-${{ github.ref }}-${{ github.event_name }}
+  # Inside a called workflow github.workflow is the caller's name, so the standalone run and the release
+  # gate's copy of this workflow do not cancel each other.
+  group: ${{ github.workflow }}-ui-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
