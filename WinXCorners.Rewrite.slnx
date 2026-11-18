@@ -1,5 +1,9 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/WinXCorners.App/WinXCorners.App.csproj" />
+    <Project Path="src/WinXCorners.Core/WinXCorners.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WinXCorners.Core.Tests/WinXCorners.Core.Tests.csproj" />
   </Folder>
 </Solution>

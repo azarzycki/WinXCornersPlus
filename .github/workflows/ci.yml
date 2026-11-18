@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [master, 'hardening/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+jobs:
+  core:
+    name: Core tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Test
+        run: >
+          dotnet test tests/WinXCorners.Core.Tests/WinXCorners.Core.Tests.csproj
+          --collect:"XPlat Code Coverage" --settings tests/coverage.runsettings
+          --results-directory TestResults --logger "trx;LogFileName=core.trx"
+      - name: Coverage gate
+        shell: pwsh
+        run: ./build/Check-Coverage.ps1 -ResultsDirectory TestResults -MinimumLine 95 -MinimumBranch 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: core-test-results-${{ matrix.os }}
+          path: TestResults
+          if-no-files-found: warn
+
+  app:
+    name: Windows app build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build
+        run: dotnet build src/WinXCorners.App/WinXCorners.App.csproj -c Release

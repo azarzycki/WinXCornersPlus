@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Platform-neutral decision logic for WinXCornersPlus. Nothing in here may reference
+    Windows Forms or call Win32: that keeps every rule in this assembly unit-testable on
+    any OS. The WinForms app (WinXCorners.App) is a thin shell over these types.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>WinXCorners.Core</RootNamespace>
+    <AssemblyName>WinXCornersPlus.Core</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="WinXCorners.Core.Tests" />
+  </ItemGroup>
+
+</Project>

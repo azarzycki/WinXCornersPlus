@@ -1,25 +1,15 @@
-# VS Code settings
-.vscode/
+# Build output (never commit binaries: publish them as release assets instead)
+bin/
+obj/
+artifacts/
+publish/
+TestResults/
+coverage/
+*.cobertura.xml
+
+# IDE / per-user state
 .vs/
-
-# Compiler-generated binaries (safe to delete)
-*.exe
-*.dll
-*.bpl
-*.bpi
-*.dcp
-*.so
-*.apk
-*.drc
-*.map
-*.dres
-*.rsm
-*.tds
-*.dcu
-*.lib
-*.a
-*.o
-*.ocx
-
-./src/WinXCorners.App/bin/
-./src/WinXCorners.App/obj/
+.vscode/
+.idea/
+*.user
+*.suo
