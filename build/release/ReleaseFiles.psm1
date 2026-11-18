@@ -190,5 +190,57 @@ function Send-CloseAppEndSession {
     return [WxcReleaseNative]::SendCloseAppEndSession($ProcessId)
 }
 
+# --- A disposable standard user (tests only) ----------------------------------------------------------------
+# GitHub's Windows runners run everything elevated. The app is tested as a standard user instead: that is how it
+# normally runs, and an elevated first start stops at the administrator-session approval dialog.
+
+function New-StandardTestUser {
+    <# Creates a local standard (non-administrator) user with a random password; returns its credential. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [ValidatePattern('\A[a-z0-9]{3,20}\z')] [string] $Name)
+    $password = 'Wx1!' + [guid]::NewGuid().ToString('N') + 'z#Q'
+    & net.exe user $Name $password /add /expires:never /comment:"WinXCornersPlus release test" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not create the local test user $Name (net user exit code $LASTEXITCODE)." }
+    # Lets this elevated script read the exit code and modules of that user's processes.
+    [System.Diagnostics.Process]::EnterDebugMode()
+    return [pscredential]::new("$env:COMPUTERNAME\$Name", (ConvertTo-SecureString $password -AsPlainText -Force))
+}
+
+function Remove-StandardTestUser {
+    <# Ends the user's processes and deletes its profile and account. Never throws. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Name)
+    try {
+        Get-CimInstance Win32_Process | Where-Object { (Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue).User -eq $Name } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        $sid = ([System.Security.Principal.NTAccount]::new($env:COMPUTERNAME, $Name)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+        Get-CimInstance Win32_UserProfile | Where-Object SID -eq $sid | Remove-CimInstance -ErrorAction SilentlyContinue
+    }
+    catch { Write-Host "Cleanup of $Name's processes/profile: $_" }
+    & net.exe user $Name /delete | Out-Null
+}
+
+function Start-ProcessAsUser {
+    <# Starts -FilePath as the given user, with its profile loaded, System32 as working directory. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [pscredential] $Credential, [Parameter(Mandatory)] [string] $FilePath)
+    $process = Start-Process -FilePath $FilePath -Credential $Credential -LoadUserProfile -WorkingDirectory ([Environment]::SystemDirectory) -PassThru
+    $null = $process.Handle # keep a handle so the exit code can be read after the process ends
+    return $process
+}
+
+function Get-ProcessImagePath([int] $ProcessId) {
+    (Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId").ExecutablePath
+}
+
+function Write-AppCrashInformation {
+    <# Prints .NET crash events from the Application log (an unhandled exception in the app ends up there). #>
+    [CmdletBinding()]
+    param([datetime] $Since = (Get-Date).AddMinutes(-10))
+    $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $Since; ProviderName = '.NET Runtime', 'Application Error' } -ErrorAction SilentlyContinue)
+    foreach ($event in $events) { Write-Host "---- $($event.ProviderName) $($event.TimeCreated):"; Write-Host $event.Message }
+}
+
 Export-ModuleMember -Function Assert-ReleaseVersionStamp, Get-SignableFiles, Assert-AuthenticodeSigned, Get-PeMachine,
-    Get-MachineName, Get-ProcessMachineName, Send-CloseAppEndSession
+    Get-MachineName, Get-ProcessMachineName, Send-CloseAppEndSession, New-StandardTestUser, Remove-StandardTestUser,
+    Start-ProcessAsUser, Get-ProcessImagePath, Write-AppCrashInformation

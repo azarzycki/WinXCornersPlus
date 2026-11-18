@@ -53,9 +53,6 @@ $Msi = (Resolve-Path -LiteralPath $Msi).Path
 $UpgradeMsi = (Resolve-Path -LiteralPath $UpgradeMsi).Path
 $NoRuntimeMsi = (Resolve-Path -LiteralPath $NoRuntimeMsi).Path
 
-# Lets this (elevated) script read the exit code and modules of the standard user's process.
-[System.Diagnostics.Process]::EnterDebugMode()
-
 # --- Bookkeeping -------------------------------------------------------------------------------------------
 $results = [System.Collections.Generic.List[object]]::new()
 function Add-Result([string] $Step, [string] $Check, [bool] $Passed, [string] $Detail = '') {
@@ -91,22 +88,18 @@ function Get-AppProcesses { @(Get-Process -Name 'WinXCornersPlus' -ErrorAction S
 
 # --- A standard user to run the app as (an elevated copy would stop at its approval dialog) ------------------
 $testUser = 'wxcinstalltest'
-$password = 'Wx1!' + [guid]::NewGuid().ToString('N') + 'z#Q'
-& net.exe user $testUser $password /add /expires:never /comment:"WinXCornersPlus installer test" | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Could not create the local test user (net user exit code $LASTEXITCODE)." }
-$credential = [pscredential]::new("$env:COMPUTERNAME\$testUser", (ConvertTo-SecureString $password -AsPlainText -Force))
-$password = $null
+$credential = New-StandardTestUser -Name $testUser
+$testStarted = Get-Date
 
 function Start-AppAsStandardUser([string] $Step) {
-    $process = Start-Process -FilePath $installedExe -Credential $credential -LoadUserProfile -WorkingDirectory ([Environment]::SystemDirectory) -PassThru
-    $null = $process.Handle # keep a handle so the exit code can be read later
+    $process = Start-ProcessAsUser -Credential $credential -FilePath $installedExe
     if ($process.WaitForExit(8000)) {
         Add-Result $Step 'app starts as a standard user and stays alive' $false "exited with code $($process.ExitCode)"
+        Write-AppCrashInformation -Since $testStarted
         return $null
     }
-    $path = (Get-CimInstance Win32_Process -Filter "ProcessId = $($process.Id)").ExecutablePath
-    $owner = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter "ProcessId = $($process.Id)") -MethodName GetOwner
-    Add-Result $Step 'app starts as a standard user and stays alive' ($path -ieq $installedExe) "pid $($process.Id), $path, user $($owner.User)"
+    $path = Get-ProcessImagePath $process.Id
+    Add-Result $Step 'app starts as a standard user and stays alive' ($path -ieq $installedExe) "pid $($process.Id), $path"
     return $process
 }
 
@@ -306,7 +299,7 @@ try {
 finally {
     Get-AppProcesses | ForEach-Object { Write-Host "Stopping leftover process $($_.Id)"; $_.Kill($true) }
     if ($createdSettings) { Remove-Item -LiteralPath (Split-Path -Parent $settingsFile) -Recurse -Force -ErrorAction SilentlyContinue }
-    & net.exe user $testUser /delete | Out-Null
+    Remove-StandardTestUser -Name $testUser
 
     $table = @('| Step | Check | Result | Detail |', '|---|---|---|---|') + @($results | ForEach-Object {
             "| $($_.Step) | $($_.Check) | $(if ($_.Result -eq 'FAIL') { '**FAIL**' } else { $_.Result }) | $(($_.Detail -replace '\|', '/') -replace '[\r\n]+', ' ') |" })
