@@ -20,7 +20,9 @@ Upgrading from 1.4.0? Read [docs/UPGRADING.md](docs/UPGRADING.md) first.
 - *Always run as administrator* in `settings.json` no longer raises a UAC prompt without explanation unless you approved exactly the current settings, including that switch, before.
 - The approval covers *Always run as administrator* and *Always hide tray icon* as well as the corner actions and commands.
 - The app warns you, before elevating and while elevated, when its folder, its program files or any folder above it can be changed by programs running as you.
-- In an administrator session started from such a folder, *Restart* no longer starts the program file directly but asks Windows to elevate it again.
+- In an administrator session started from such a folder, *Restart* starts the app again without administrator rights, and the tray menu item says so.
+- If *Always run as administrator* is on, that new copy asks for administrator rights, and Windows shows its prompt.
+- If the app cannot be started without administrator rights, *Restart* starts nothing and tells you why.
 - An administrator session no longer moves, backs up or migrates settings files, and writes no crash log.
 - An administrator session refuses to read or write its settings through a junction, symbolic link or hard link, and turns on Windows' Redirection Guard.
 - An administrator session leaves a damaged or redirected settings file untouched, runs on default settings and does not save over it.

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using Microsoft.Win32;
 using WinXCorners.App.Tests.Infrastructure;
@@ -438,5 +439,125 @@ public sealed class AppHostTests : IDisposable
             using var hive = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
             hive.DeleteSubKeyTree(root, throwOnMissingSubKey: false);
         }
+    }
+
+    // ---- restarts (review V2 D5) -------------------------------------------------------------------------
+
+    private AppHost CreateForRestart(ElevationMode elevation, InstallLocationKind install, FakeRestartStarter starter)
+    {
+        var host = AppHost.Create(Options(), _paths, new MemoryApprovalStore(), elevation, _runValueName, starter, () => install);
+        _hosts.Add(host);
+        return host;
+    }
+
+    /// <summary>
+    /// The app-side mapping: which starter TryRestart calls, with which arguments. Above all, an elevated session with a
+    /// normal-rights desktop never starts program files from an unprotected folder with its own token, and never through
+    /// runas (which shows no prompt to an elevated process): "Restart" goes through the shell without --no-elevate.
+    /// </summary>
+    [Theory]
+    [InlineData(ElevationMode.NotElevated, InstallLocationKind.Unknown, nameof(RestartMode.SameRights), FakeRestartStarter.Direct, false)]
+    [InlineData(ElevationMode.NotElevated, InstallLocationKind.UserWritable, nameof(RestartMode.AsAdministrator), FakeRestartStarter.Prompt, false)]
+    [InlineData(ElevationMode.NotElevated, InstallLocationKind.Unknown, nameof(RestartMode.WithoutAdministrator), FakeRestartStarter.Direct, true)]
+    [InlineData(ElevationMode.ElevatedWithStandardShell, InstallLocationKind.Protected, nameof(RestartMode.SameRights), FakeRestartStarter.Direct, false)]
+    [InlineData(ElevationMode.ElevatedWithStandardShell, InstallLocationKind.Protected, nameof(RestartMode.AsAdministrator), FakeRestartStarter.Direct, false)]
+    [InlineData(ElevationMode.ElevatedWithStandardShell, InstallLocationKind.UserWritable, nameof(RestartMode.SameRights), FakeRestartStarter.Shell, false)]
+    [InlineData(ElevationMode.ElevatedWithStandardShell, InstallLocationKind.Unknown, nameof(RestartMode.SameRights), FakeRestartStarter.Shell, false)]
+    [InlineData(ElevationMode.ElevatedWithStandardShell, InstallLocationKind.Protected, nameof(RestartMode.WithoutAdministrator), FakeRestartStarter.Shell, true)]
+    [InlineData(ElevationMode.ElevatedWithStandardShell, InstallLocationKind.UserWritable, nameof(RestartMode.WithoutAdministrator), FakeRestartStarter.Shell, true)]
+    [InlineData(ElevationMode.ElevatedWithoutStandardRights, InstallLocationKind.UserWritable, nameof(RestartMode.SameRights), FakeRestartStarter.Direct, false)]
+    [InlineData(ElevationMode.ElevatedWithoutStandardRights, InstallLocationKind.Unknown, nameof(RestartMode.AsAdministrator), FakeRestartStarter.Direct, false)]
+    public void TryRestart_calls_the_starter_the_policy_chooses(
+        ElevationMode elevation, InstallLocationKind install, string modeName, string expectedStarter, bool noElevate)
+    {
+        var mode = Enum.Parse<RestartMode>(modeName);
+        var starter = new FakeRestartStarter();
+        var host = CreateForRestart(elevation, install, starter);
+        var exits = 0;
+        host.ExitRequested += () => exits++;
+
+        Assert.True(host.TryRestart(mode, out var error), error);
+
+        var call = Assert.Single(starter.Calls);
+        Assert.Equal(expectedStarter, call.How);
+        Assert.Equal(host.ExecutablePath, call.Executable);
+        string[] expectedArguments = noElevate
+            ? [CommandLineOptions.RestartedFromSwitch, Environment.ProcessId.ToString(CultureInfo.InvariantCulture), CommandLineOptions.NoElevateSwitch]
+            : [CommandLineOptions.RestartedFromSwitch, Environment.ProcessId.ToString(CultureInfo.InvariantCulture)];
+        Assert.Equal(expectedArguments, call.Arguments);
+        Assert.Equal(1, exits);
+    }
+
+    [Theory]
+    [InlineData(ElevationMode.ElevatedWithStandardShell, InstallLocationKind.UserWritable, nameof(RestartMode.AsAdministrator))]
+    [InlineData(ElevationMode.ElevatedWithStandardShell, InstallLocationKind.Unknown, nameof(RestartMode.AsAdministrator))]
+    [InlineData(ElevationMode.ElevatedWithoutStandardRights, InstallLocationKind.Protected, nameof(RestartMode.WithoutAdministrator))]
+    public void A_refused_restart_starts_nothing_and_keeps_running(ElevationMode elevation, InstallLocationKind install, string modeName)
+    {
+        var mode = Enum.Parse<RestartMode>(modeName);
+        var starter = new FakeRestartStarter();
+        var host = CreateForRestart(elevation, install, starter);
+        var exits = 0;
+        host.ExitRequested += () => exits++;
+
+        Assert.False(host.TryRestart(mode, out var error));
+
+        Assert.Empty(starter.Calls);
+        Assert.Equal(0, exits);
+        Assert.Equal(host.PlanRestart(mode).RefusalText, error);
+        Assert.Contains(host.Log.Snapshot(), line => line.Contains("refused", StringComparison.Ordinal));
+    }
+
+    /// <summary>If the shell cannot start the app without administrator rights, nothing is started with the elevated token.</summary>
+    [Fact]
+    public void A_failed_restart_without_administrator_rights_has_no_fallback()
+    {
+        var starter = new FakeRestartStarter { Failure = "The desktop shell is not running." };
+        var host = CreateForRestart(ElevationMode.ElevatedWithStandardShell, InstallLocationKind.UserWritable, starter);
+        var exits = 0;
+        host.ExitRequested += () => exits++;
+
+        Assert.False(host.TryRestart(RestartMode.SameRights, out var error));
+
+        Assert.Equal("The desktop shell is not running.", error);
+        Assert.Equal(new[] { FakeRestartStarter.Shell }, starter.Calls.Select(static c => c.How));
+        Assert.Equal(0, exits);
+    }
+
+    [Fact]
+    public void A_restart_without_administrator_rights_says_so_in_the_log_and_the_menu()
+    {
+        var host = CreateForRestart(ElevationMode.ElevatedWithStandardShell, InstallLocationKind.UserWritable, new FakeRestartStarter());
+
+        var decision = host.PlanRestart(RestartMode.SameRights);
+        Assert.Equal(RestartPolicy.RestartWithoutAdministratorMenuText, RestartPolicy.MenuText(decision));
+        Assert.True(host.TryRestart(RestartMode.SameRights, out _));
+        Assert.Contains(RestartPolicy.StartedText(decision), host.Log.Snapshot());
+    }
+
+    [Fact]
+    public void A_normal_rights_session_does_not_probe_the_install_folder_to_restart()
+    {
+        var starter = new FakeRestartStarter();
+        var host = AppHost.Create(Options(), _paths, new MemoryApprovalStore(), ElevationMode.NotElevated, _runValueName, starter,
+            static () => throw new InvalidOperationException("The install folder was probed."));
+        _hosts.Add(host);
+
+        Assert.True(host.TryRestart(RestartMode.SameRights, out _));
+        Assert.Equal(FakeRestartStarter.Direct, Assert.Single(starter.Calls).How);
+    }
+
+    /// <summary>
+    /// The last line of defence: runas from an elevated process shows no prompt, so ProcessElevation refuses it. Runs only
+    /// where the test process is elevated (GitHub's runners); elsewhere the call would show a real UAC prompt.
+    /// </summary>
+    [SkippableFact]
+    public void TryRestartElevated_refuses_in_an_elevated_process()
+    {
+        Skip.IfNot(TestEnvironment.IsElevated, "Only an elevated test process can check the refusal without a real UAC prompt.");
+
+        Assert.False(ProcessElevation.TryRestartElevated(
+            CommandLineOptions.BuildRestartArguments(Environment.ProcessId, noElevate: true), out var error));
+        Assert.Contains("already runs as administrator", error, StringComparison.Ordinal);
     }
 }

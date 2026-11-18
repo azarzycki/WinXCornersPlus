@@ -116,7 +116,8 @@ internal sealed class MainForm : Form
                 _trayIcon.ShowBalloonTip(BalloonTimeoutMs, title, text, icon);
             }
         };
-        ShowTrayMenu = point => Win32PopupMenu.ShowTrayMenu(Handle, point, _host.Settings.Current.HotCornersEnabled, _host.IsElevated);
+        ShowTrayMenu = point => Win32PopupMenu.ShowTrayMenu(Handle, point, _host.Settings.Current.HotCornersEnabled, _host.IsElevated,
+            RestartPolicy.MenuText(_host.PlanRestart(RestartMode.SameRights)));
 
         _host.Settings.Changed += OnSettingsChanged;
         _host.ExitRequested += Shutdown;
@@ -513,10 +514,12 @@ internal sealed class MainForm : Form
     private void Restart(RestartMode mode)
     {
         // On success the host raises ExitRequested, which runs Shutdown. On failure the host has logged why; the
-        // user is told too, and the app keeps running.
+        // user is told too (in Core's words, which say when an elevated session would not restart elevated, and why),
+        // and the app keeps running.
+        var decision = _host.PlanRestart(mode);
         if (!_host.TryRestart(mode, out var error))
         {
-            ShowBalloon(TrayText, $"WinXCornersPlus could not restart: {error ?? "unknown reason"}. It keeps running.", ToolTipIcon.Warning);
+            ShowBalloon(TrayText, RestartPolicy.FailureText(decision, error), ToolTipIcon.Warning);
         }
     }
 

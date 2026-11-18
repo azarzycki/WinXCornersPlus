@@ -1,5 +1,3 @@
-using System.ComponentModel;
-using System.Diagnostics;
 using System.Reflection;
 using WinXCorners.Core.Diagnostics;
 using WinXCorners.Core.Model;
@@ -21,6 +19,8 @@ internal sealed class AppHost : IAppHost, IStartupHost, IDisposable
     private readonly IApprovedSettingsStore _approvals;
     private readonly SettingsStore _store;
     private readonly Lazy<bool?> _installWritable;
+    private readonly IRestartStarter _restarter;
+    private readonly Func<InstallLocationKind>? _installKindOverride;
     private bool _reapproveOnChange;
     private bool _disposed;
 
@@ -31,9 +31,13 @@ internal sealed class AppHost : IAppHost, IStartupHost, IDisposable
         SettingsLoadResult loadResult,
         IApprovedSettingsStore approvals,
         ElevationMode elevation,
-        string startupValueName)
+        string startupValueName,
+        IRestartStarter restarter,
+        Func<InstallLocationKind>? installKindOverride)
     {
         Options = options;
+        _restarter = restarter;
+        _installKindOverride = installKindOverride;
         Log = log;
         _store = store;
         LoadResult = loadResult;
@@ -118,12 +122,18 @@ internal sealed class AppHost : IAppHost, IStartupHost, IDisposable
     /// Test entry point: explicit settings location, approvals store, elevation flag and Run value name, so a test
     /// never touches the user's real settings, HKLM approval or autostart entry. Does not change the current directory.
     /// </summary>
+    /// <param name="restarter">How restarts start the new process; the real starter when null.</param>
+    /// <param name="installKind">
+    /// Replaces the install-folder probe for restart decisions (tests run from folders of any kind); the probe when null.
+    /// </param>
     internal static AppHost Create(
         CommandLineOptions options,
         SettingsPaths paths,
         IApprovedSettingsStore approvals,
         ElevationMode elevation,
-        string startupValueName)
+        string startupValueName,
+        IRestartStarter? restarter = null,
+        Func<InstallLocationKind>? installKind = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(paths);
@@ -135,7 +145,8 @@ internal sealed class AppHost : IAppHost, IStartupHost, IDisposable
         var isElevated = elevation.IsElevated();
         var (store, result) = LoadSettings(paths, SettingsStorePolicy.For(isElevated),
             isElevated ? new VerifiedSettingsFile(paths.PrimaryPath) : null, log);
-        var host = new AppHost(options, log, store, result, approvals, elevation, startupValueName);
+        var host = new AppHost(options, log, store, result, approvals, elevation, startupValueName,
+            restarter ?? RestartStarter.Instance, installKind);
         log.Add($"WinXCornersPlus {host.VersionText} started{elevation switch
         {
             ElevationMode.ElevatedWithStandardShell => " as administrator",
@@ -210,15 +221,8 @@ internal sealed class AppHost : IAppHost, IStartupHost, IDisposable
 
     public bool TrySetStartupEnabled(bool enabled, out string? error) => Startup.TrySetEnabled(enabled, out error);
 
-    public bool TryRestart(RestartMode mode, out string? error)
+    public RestartDecision PlanRestart(RestartMode mode)
     {
-        var saved = Settings.Flush();
-        if (!saved.Succeeded)
-        {
-            Log.Add($"Settings could not be saved before the restart: {saved.Error}");
-        }
-
-        var arguments = CommandLineOptions.BuildRestartArguments(Environment.ProcessId, noElevate: mode == RestartMode.WithoutAdministrator);
         var request = mode switch
         {
             RestartMode.AsAdministrator => RestartRequest.AsAdministrator,
@@ -226,36 +230,54 @@ internal sealed class AppHost : IAppHost, IStartupHost, IDisposable
             _ => RestartRequest.SameRights
         };
 
-        // Review V2 D5: an elevated restart starts the binary directly only from a protected folder; otherwise it goes
-        // through the UAC prompt, so a replaced executable or DLL never gets the administrator token silently.
-        var method = RestartPolicy.Decide(request, Elevation, IsElevated ? GetSecurityContext().Install.Kind : InstallLocationKind.Unknown);
-        bool started;
-        switch (method)
+        // The install folder matters only to an elevated session; a normal-rights one does not probe ACLs for this.
+        var install = !IsElevated ? InstallLocationKind.Unknown
+            : _installKindOverride?.Invoke() ?? GetSecurityContext().Install.Kind;
+        return RestartPolicy.Decide(request, Elevation, install);
+    }
+
+    public bool TryRestart(RestartMode mode, out string? error)
+    {
+        // Review V2 D5: an elevated session restarts with its own token only from a protected folder (or on an account
+        // where everything runs elevated anyway). From any other folder it restarts WITHOUT administrator rights through
+        // the desktop shell, or not at all. runas is used only by a process that is not elevated: from an elevated one
+        // Windows shows no prompt, so it would not protect anything.
+        var decision = PlanRestart(mode);
+        if (decision.Method == RestartMethod.NotPossible)
         {
-            case RestartMethod.ThroughElevationPrompt:
-                started = ProcessElevation.TryRestartElevated(arguments, out error);
-                break;
-            case RestartMethod.ThroughDesktopShell:
-                // Our own token is elevated; only the shell can start us again without it (fail closed otherwise).
-                started = DeElevatedLauncher.TryShellExecute(
-                    ExecutablePath, CommandLineQuoting.Join(arguments), Environment.SystemDirectory, hidden: false, out error);
-                break;
-            case RestartMethod.StartDirectly:
-                started = TryStartSameRights(arguments, out error);
-                break;
-            default:
-                started = false;
-                error = RestartPolicy.NoStandardRightsText;
-                break;
+            error = decision.RefusalText;
+            Log.Add($"Restart ({mode}) refused: {error}");
+            return false;
         }
 
-        Log.Add(started ? $"Restarting ({mode}, {method})." : $"Restart ({mode}, {method}) failed: {error}");
+        var saved = Settings.Flush();
+        if (!saved.Succeeded)
+        {
+            Log.Add($"Settings could not be saved before the restart: {saved.Error}");
+        }
+
+        var arguments = CommandLineOptions.BuildRestartArguments(Environment.ProcessId, decision.NoElevate);
+        var started = decision.Method switch
+        {
+            RestartMethod.ThroughElevationPrompt => _restarter.TryStartThroughElevationPrompt(ExecutablePath, arguments, out error),
+            RestartMethod.ThroughDesktopShell => _restarter.TryStartThroughDesktopShell(ExecutablePath, arguments, out error),
+            RestartMethod.StartDirectly => _restarter.TryStartDirectly(ExecutablePath, arguments, out error),
+            _ => Unsupported(decision.Method, out error)
+        };
+
+        Log.Add(started ? RestartPolicy.StartedText(decision) : $"Restart ({mode}, {decision.Method}) failed: {error}");
         if (started)
         {
             ExitRequested?.Invoke();
         }
 
         return started;
+    }
+
+    private static bool Unsupported(RestartMethod method, out string? error)
+    {
+        error = $"Unsupported restart method {method}.";
+        return false;
     }
 
     public void RequestExit()
@@ -334,45 +356,6 @@ internal sealed class AppHost : IAppHost, IStartupHost, IDisposable
             ? "Settings approved for administrator sessions."
             : "The approval could not be stored (administrator rights are needed to write it).");
         return written;
-    }
-
-    private bool TryStartSameRights(IReadOnlyList<string> arguments, out string? error)
-    {
-        if (string.IsNullOrEmpty(ExecutablePath) || !Path.IsPathFullyQualified(ExecutablePath))
-        {
-            error = "The path of the running program is unknown, so it cannot be restarted.";
-            return false;
-        }
-
-        // CreateProcess with an absolute path and System32 as working directory: nothing is searched for (review S3).
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = ExecutablePath,
-            Arguments = CommandLineQuoting.Join(arguments),
-            WorkingDirectory = Environment.SystemDirectory,
-            UseShellExecute = false
-        };
-
-        try
-        {
-            using var process = Process.Start(startInfo);
-            error = null;
-            return true;
-        }
-        catch (Win32Exception ex)
-        {
-            error = ex.Message;
-        }
-        catch (InvalidOperationException ex)
-        {
-            error = ex.Message;
-        }
-        catch (PlatformNotSupportedException ex)
-        {
-            error = ex.Message;
-        }
-
-        return false;
     }
 
     /// <summary>

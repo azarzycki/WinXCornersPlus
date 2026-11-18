@@ -156,13 +156,14 @@ folder below). If programs without administrator rights could change any of them
 share, or the permissions cannot be read, it warns you before you elevate and while you run elevated (see the
 tables below). (`Core/Security/InstallLocationAssessor.cs`, `App/Platform/InstallLocationProbe.cs`.)
 
-In an elevated session, the tray menu's *Restart* starts the program file directly only from a folder that is
-confirmed admin-only. From any other folder it asks Windows to elevate the program again (the `runas` request that
-normally shows the UAC prompt), so that a replaced file is not silently given administrator rights.
-(`Core/Security/RestartPolicy.cs`.) **Not verified:** whether Windows actually shows a UAC prompt when that request
-comes from a process that is already elevated. If it does not, this restart gives a replaced file administrator
-rights without asking. Item 4.12 of the [manual test plan](MANUAL-TEST-PLAN.md) checks it; until then, do not run
-an elevated session from a changeable folder.
+In an elevated session, the tray menu's *Restart* starts the program file with administrator rights only from a
+folder that is confirmed admin-only, or on an account where everything runs as administrator. From any other folder
+it starts the program without administrator rights, through Explorer as in point 1, and the menu item reads
+*Restart without administrator rights*. Asking Windows to elevate again would not help: a process that is already
+elevated gets no UAC prompt, so a replaced file would get administrator rights without asking. The new copy follows
+the normal start rules. With *Always run as administrator* on, it asks for administrator rights, and Windows shows
+its prompt because the request comes from a process without them. If Explorer cannot start the program, nothing is
+started and the app keeps running. (`Core/Security/RestartPolicy.cs`.)
 
 **7. An elevated session handles your settings folder carefully.** `%APPDATA%\WinXCornersPlus` belongs to you, so
 a program running as you controls what is in it, and could replace the folder or the file with a link to somewhere
@@ -236,8 +237,9 @@ What the automated tests prove, and what they do not:
   session on an account with UAC on does not get administrator rights**, has never been observed on real Windows.
   The Core decision rules for it (which situation, which launch method, which restart method) are unit-tested. It
   must be checked by hand before a release: item 0.1 of [MANUAL-TEST-PLAN.md](MANUAL-TEST-PLAN.md).
-- **The elevated *Restart* from a changeable folder** (point 6 above): whether Windows shows a UAC prompt is not
-  verified.
+- **The elevated *Restart* from a changeable folder** (point 6 above) starts the program through Explorer, like the
+  launches above, so it has not been observed on real Windows either. The choice of restart method is tested with
+  stand-ins for the real start. Item 4.12 of [MANUAL-TEST-PLAN.md](MANUAL-TEST-PLAN.md) checks it by hand.
 - **ARM64 hardware**, **real multi-monitor and mixed-DPI behaviour**, and **the lock screen with the pointer parked
   in the top-left corner** have not been verified on real hardware. The settings-folder checks of point 7 are
   tested on Windows with junctions, symbolic links and hard links created by the tests, but not with Redirection

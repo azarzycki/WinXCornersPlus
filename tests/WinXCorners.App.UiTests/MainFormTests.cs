@@ -226,6 +226,33 @@ public sealed class MainFormTests
     }
 
     [Fact]
+    public void Restart_WhenTheStartFails_ShowsCoresMessage_AndKeepsRunning()
+    {
+        var starter = new RecordingRestartStarter { Failure = "The file was not found." };
+        using var env = new MainFormEnvironment(restarter: starter);
+        Ui.Run(() =>
+        {
+            using var form = env.CreateForm();
+            form.HandleTrayCommandForTest(Win32PopupMenu.TrayCommandReload);
+
+            Assert.Equal(new[] { "direct" }, starter.Calls);
+            var expected = RestartPolicy.FailureText(env.Host.PlanRestart(RestartMode.SameRights), starter.Failure);
+            Assert.Equal(expected, Assert.Single(env.Balloons).Text);
+            Assert.False(form.IsShutDown);
+        });
+    }
+
+    [Theory]
+    [InlineData(RestartPolicy.RestartMenuText)]
+    [InlineData(RestartPolicy.RestartWithoutAdministratorMenuText)]
+    public void TrayMenu_RestartItem_ShowsCoresText(string restartText)
+    {
+        var items = Win32PopupMenu.BuildTrayItems(hotCornersEnabled: true, isElevated: true, restartText);
+
+        Assert.Equal(restartText, Assert.Single(items, static i => i.Id == Win32PopupMenu.TrayCommandReload).Text);
+    }
+
+    [Fact]
     public void ThemeChangeMessages_Repaint_WithTheNewColours()
     {
         using var env = new MainFormEnvironment();
@@ -314,7 +341,8 @@ internal sealed class MainFormEnvironment : IDisposable
     /// Keep the default corner actions (for the flyout's screenshot). Only for tests that never call Start(), which is
     /// what starts the hot-corner timer.
     /// </param>
-    internal MainFormEnvironment(bool defaultCorners = false)
+    /// <param name="restarter">Records restarts instead of starting anything; the tray "Restart" must not be used without it.</param>
+    internal MainFormEnvironment(bool defaultCorners = false, IRestartStarter? restarter = null)
     {
         _directory = Path.Combine(Path.GetTempPath(), "wxc-ui-main-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_directory);
@@ -332,8 +360,8 @@ internal sealed class MainFormEnvironment : IDisposable
             };
         Assert.True(new SettingsStore(_paths).Save(initial).Succeeded);
 
-        Host = AppHost.Create(CommandLineOptions.Parse([]), _paths, new MemoryApprovals(), isElevated: false,
-            startupValueName: "WinXCornersPlus.UiTests." + Guid.NewGuid().ToString("N"));
+        Host = AppHost.Create(CommandLineOptions.Parse([]), _paths, new MemoryApprovals(), ElevationMode.NotElevated,
+            "WinXCornersPlus.UiTests." + Guid.NewGuid().ToString("N"), restarter);
     }
 
     internal AppHost Host { get; }

@@ -120,3 +120,32 @@ internal sealed class MemoryApprovalStore : IApprovedSettingsStore
         return true;
     }
 }
+
+/// <summary>An <see cref="IRestartStarter"/> that records which way a restart would start the new process.</summary>
+internal sealed class FakeRestartStarter : IRestartStarter
+{
+    internal const string Direct = "direct";
+    internal const string Prompt = "prompt";
+    internal const string Shell = "shell";
+
+    internal List<(string How, string Executable, IReadOnlyList<string> Arguments)> Calls { get; } = [];
+
+    /// <summary>When set, every start fails with this error.</summary>
+    internal string? Failure { get; set; }
+
+    public bool TryStartDirectly(string executable, IReadOnlyList<string> arguments, out string? error) =>
+        Record(Direct, executable, arguments, out error);
+
+    public bool TryStartThroughElevationPrompt(string executable, IReadOnlyList<string> arguments, out string? error) =>
+        Record(Prompt, executable, arguments, out error);
+
+    public bool TryStartThroughDesktopShell(string executable, IReadOnlyList<string> arguments, out string? error) =>
+        Record(Shell, executable, arguments, out error);
+
+    private bool Record(string how, string executable, IReadOnlyList<string> arguments, out string? error)
+    {
+        Calls.Add((how, executable, arguments.ToArray()));
+        error = Failure;
+        return Failure is null;
+    }
+}

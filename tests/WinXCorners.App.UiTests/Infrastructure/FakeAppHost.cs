@@ -94,6 +94,17 @@ internal sealed class FakeAppHost : IAppHost, IDisposable
         return true;
     }
 
+    /// <summary>Core's decision for this host's elevation (elevated means "with a normal-rights desktop") and install kind.</summary>
+    public RestartDecision PlanRestart(RestartMode mode) => RestartPolicy.Decide(
+        mode switch
+        {
+            RestartMode.AsAdministrator => RestartRequest.AsAdministrator,
+            RestartMode.WithoutAdministrator => RestartRequest.WithoutAdministrator,
+            _ => RestartRequest.SameRights
+        },
+        IsElevated ? ElevationMode.ElevatedWithStandardShell : ElevationMode.NotElevated,
+        Install.Kind);
+
     public bool TryRestart(RestartMode mode, out string? error)
     {
         Restarts.Add(mode);
@@ -127,5 +138,27 @@ internal sealed class MemoryApprovals : IApprovedSettingsStore
     {
         Stored = approval;
         return true;
+    }
+}
+
+/// <summary>An <see cref="IRestartStarter"/> that records the way a restart would start the new process.</summary>
+internal sealed class RecordingRestartStarter : IRestartStarter
+{
+    internal List<string> Calls { get; } = [];
+
+    /// <summary>When set, every start fails with this error.</summary>
+    internal string? Failure { get; set; }
+
+    public bool TryStartDirectly(string executable, IReadOnlyList<string> arguments, out string? error) => Record("direct", out error);
+
+    public bool TryStartThroughElevationPrompt(string executable, IReadOnlyList<string> arguments, out string? error) => Record("prompt", out error);
+
+    public bool TryStartThroughDesktopShell(string executable, IReadOnlyList<string> arguments, out string? error) => Record("shell", out error);
+
+    private bool Record(string how, out string? error)
+    {
+        Calls.Add(how);
+        error = Failure;
+        return Failure is null;
     }
 }

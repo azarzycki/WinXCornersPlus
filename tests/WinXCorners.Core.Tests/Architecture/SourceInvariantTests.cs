@@ -63,7 +63,28 @@ public sealed partial class SourceInvariantTests
     public void Process_Start_appears_only_in_the_launch_and_restart_code()
     {
         AssertNone(SourceInvariants.OnlyIn(AppSources(), static f => f.Code, ProcessStart(),
-            ["ProcessLauncher.cs", "ProcessElevation.cs", "AppHost.cs"], "Process.Start"));
+            ["ProcessLauncher.cs", "ProcessElevation.cs", "RestartStarter.cs"], "Process.Start"));
+    }
+
+    /// <summary>
+    /// Review V2 D5: runas from an elevated process shows no UAC prompt, so ProcessElevation.TryRestartElevated must only
+    /// be reached through the restart starter (which Core's RestartPolicy drives), and must itself refuse to run in an
+    /// elevated process before it starts anything.
+    /// </summary>
+    [Fact]
+    public void The_elevated_restart_is_reached_only_through_the_restart_starter_and_refuses_when_elevated()
+    {
+        var files = AppSources();
+        AssertNone(SourceInvariants.OnlyIn(files, static f => f.Code, TryRestartElevatedCall(),
+            ["ProcessElevation.cs", "RestartStarter.cs"], "ProcessElevation.TryRestartElevated"));
+
+        var code = files.Single(static f => f.FileName == "ProcessElevation.cs").Code;
+        var method = TryRestartElevatedCall().Match(code);
+        Assert.True(method.Success, "TryRestartElevated not found in ProcessElevation.cs.");
+        var check = ElevatedCheck().Match(code, method.Index);
+        var start = ProcessStart().Match(code, method.Index);
+        Assert.True(check.Success && start.Success && check.Index < start.Index,
+            "TryRestartElevated must return early when the process is elevated, before Process.Start.");
     }
 
     [Fact]
@@ -346,6 +367,12 @@ public sealed partial class SourceInvariantTests
 
     [GeneratedRegex(@"\bProcess\s*\.\s*Start\s*\(")]
     private static partial Regex ProcessStart();
+
+    [GeneratedRegex(@"\bTryRestartElevated\s*\(")]
+    private static partial Regex TryRestartElevatedCall();
+
+    [GeneratedRegex(@"\bif\s*\(\s*IsElevated\s*\)\s*\{[^{}]*\breturn\s+false\s*;")]
+    private static partial Regex ElevatedCheck();
 
     [GeneratedRegex("\"runas\"", RegexOptions.IgnoreCase)]
     private static partial Regex RunAs();

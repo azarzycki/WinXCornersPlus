@@ -7,10 +7,13 @@ namespace WinXCorners.App;
 /// <summary>How <see cref="IAppHost.TryRestart"/> starts the replacement process.</summary>
 internal enum RestartMode
 {
-    /// <summary>Restart with the rights the app has now.</summary>
+    /// <summary>
+    /// The tray menu's "Restart". An elevated session restarts with its rights only from a protected folder (or on an
+    /// account where everything runs as administrator); otherwise it restarts without administrator rights.
+    /// </summary>
     SameRights,
 
-    /// <summary>Restart elevated. Windows shows a UAC prompt; the user may decline.</summary>
+    /// <summary>Restart elevated from a normal-rights session. Windows shows a UAC prompt; the user may decline.</summary>
     AsAdministrator,
 
     /// <summary>Restart with normal rights and do not auto-elevate on that start.</summary>
@@ -55,9 +58,13 @@ internal interface IAppHost
 
     bool TrySetStartupEnabled(bool enabled, out string? error);
 
+    /// <summary>What <see cref="TryRestart"/> would do for <paramref name="mode"/> now (Core's RestartPolicy).</summary>
+    RestartDecision PlanRestart(RestartMode mode);
+
     /// <summary>
-    /// Saves settings, starts a replacement process and then asks this one to exit. Returns false
-    /// (and keeps running) if the replacement could not be started, e.g. the UAC prompt was declined.
+    /// Saves settings, starts a replacement process as <see cref="PlanRestart"/> decides and then asks this one to exit.
+    /// Returns false (and keeps running) if the restart is refused or the replacement could not be started, e.g. the
+    /// UAC prompt was declined or the desktop shell could not start it without administrator rights.
     /// </summary>
     bool TryRestart(RestartMode mode, out string? error);
 

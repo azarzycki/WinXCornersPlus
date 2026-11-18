@@ -175,11 +175,14 @@ every project.
 Shutdown has one path, `MainForm.Shutdown` (on *Exit*, a successful restart, or a confirmed `WM_ENDSESSION`): stop
 the timers, save, remove the tray icon, dispose every window, end the message loop. No window can veto it.
 
-Restarts (`AppHost.TryRestart`) go through Core's `RestartPolicy`: from a normal session, *Restart* starts the
-executable directly and *Restart as administrator…* uses the `runas` verb (`ProcessElevation`). From an elevated
-session, *Restart* starts the executable directly only when the install folder is assessed `Protected`; otherwise
-it uses `runas` again, so the user is meant to see a UAC prompt. Whether Windows shows that prompt to an already
-elevated caller has not been verified (see [SECURITY-MODEL.md](SECURITY-MODEL.md#not-verified-on-every-pc)).
+Restarts (`AppHost.TryRestart`) go through Core's `RestartPolicy`, and `RestartStarter` performs them. From a normal
+session, *Restart* starts the executable directly and *Restart as administrator…* uses the `runas` verb
+(`ProcessElevation`). Only a process that is not elevated uses `runas`, because Windows shows no UAC prompt to an
+elevated caller; `ProcessElevation` refuses the request in an elevated process. From an elevated session, *Restart*
+starts the executable directly only when the install folder is assessed `Protected`, or on an account where
+everything runs as administrator. Otherwise it starts the app without administrator rights through Explorer, without
+`--no-elevate`, and the tray item reads *Restart without administrator rights*. That copy follows the normal start
+rules, so *Always run as administrator* raises a real UAC prompt. If Explorer cannot start it, nothing is started.
 
 ## Tests
 

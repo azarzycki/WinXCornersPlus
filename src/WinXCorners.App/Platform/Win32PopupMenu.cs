@@ -22,8 +22,11 @@ internal static class Win32PopupMenu
         NativeMethods.TPM_LEFTALIGN | NativeMethods.TPM_TOPALIGN | NativeMethods.TPM_RIGHTBUTTON | NativeMethods.TPM_RETURNCMD;
 
     /// <summary>The tray menu as data, in display order; separators have id 0. "&amp;&amp;" shows a single "&amp;".</summary>
-    internal static IReadOnlyList<(int Id, string Text, bool Enabled, bool Separator)> BuildTrayItems(bool hotCornersEnabled, bool isElevated)
+    /// <param name="restartText">The "Restart" item's text from Core (it says when the restart drops administrator rights).</param>
+    internal static IReadOnlyList<(int Id, string Text, bool Enabled, bool Separator)> BuildTrayItems(
+        bool hotCornersEnabled, bool isElevated, string restartText)
     {
+        ArgumentNullException.ThrowIfNull(restartText);
         return
         [
             (TrayCommandToggleHotCorners, hotCornersEnabled ? "Disable hot corners" : "Enable hot corners", true, false),
@@ -32,7 +35,7 @@ internal static class Win32PopupMenu
                 ? (TrayCommandElevate, "Running as administrator", false, false)
                 : (TrayCommandElevate, "Restart as administrator…", true, false),
             (0, string.Empty, false, true),
-            (TrayCommandReload, "Restart", true, false),
+            (TrayCommandReload, restartText.Replace("&", "&&", StringComparison.Ordinal), true, false),
             (TrayCommandLogWindow, "Log window", true, false),
             (TrayCommandAdvanced, "Settings…", true, false),
             (TrayCommandSecurity, "Security && privacy…", true, false),
@@ -43,9 +46,9 @@ internal static class Win32PopupMenu
     }
 
     /// <summary>Shows the tray menu at <paramref name="screenPoint"/>; returns the chosen command id, or 0.</summary>
-    internal static int ShowTrayMenu(IntPtr owner, Point screenPoint, bool hotCornersEnabled, bool isElevated)
+    internal static int ShowTrayMenu(IntPtr owner, Point screenPoint, bool hotCornersEnabled, bool isElevated, string restartText)
     {
-        var items = BuildTrayItems(hotCornersEnabled, isElevated);
+        var items = BuildTrayItems(hotCornersEnabled, isElevated, restartText);
         return Show(owner, screenPoint, menu =>
         {
             foreach (var item in items)

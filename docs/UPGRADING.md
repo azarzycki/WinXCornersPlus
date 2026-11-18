@@ -132,7 +132,7 @@ not respond*. In 1.4.0 a second start did nothing, so a hidden app could only be
   where they are only in the Log window).
 - At sign-out, shutdown, or when the installer needs to replace the program, the app saves its settings and exits
   on its own.
-- In an administrator session started from a folder that is not admin-only, the tray menu's *Restart* asks Windows
-  to elevate the program again instead of starting the file directly. Whether Windows shows a UAC prompt for that
-  has not been verified; install with the installer if you use elevated mode.
+- In an administrator session started from a folder that is not admin-only, the tray menu's *Restart* reads
+  *Restart without administrator rights*. It starts the program again without administrator rights. If *Always run
+  as administrator* is on, the new copy asks for them, and Windows shows its prompt.
 - The program is not code-signed yet, so Windows shows "Unknown publisher". See [INSTALLING.md](INSTALLING.md).

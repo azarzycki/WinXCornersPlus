@@ -6,7 +6,9 @@ using WinXCorners.Core.Security;
 
 namespace WinXCorners.App;
 
-/// <summary>Knows whether this process is elevated and restarts it elevated through the UAC prompt.</summary>
+/// <summary>
+/// Knows whether this process is elevated, and restarts a NOT elevated process elevated through the UAC prompt.
+/// </summary>
 internal static class ProcessElevation
 {
     /// <summary>Win32 ERROR_CANCELLED: the user chose "No" on the UAC prompt.</summary>
@@ -65,9 +67,20 @@ internal static class ProcessElevation
     /// Starts this executable again with the <c>runas</c> verb. Returns false with a message when the user declines
     /// the prompt or the start fails; never throws for those.
     /// </summary>
+    /// <remarks>
+    /// Only a process that is NOT elevated may use this (review V2 D5). An elevated process gets no UAC prompt from
+    /// <c>runas</c>, so the program files (which programs without administrator rights may have replaced) would start
+    /// elevated silently. Core's RestartPolicy never asks for it then; this check fails closed if anything else does.
+    /// </remarks>
     internal static bool TryRestartElevated(IReadOnlyList<string> arguments, out string? error)
     {
         ArgumentNullException.ThrowIfNull(arguments);
+        if (IsElevated)
+        {
+            error = "WinXCornersPlus already runs as administrator, so Windows would not show its prompt; it was not restarted.";
+            return false;
+        }
+
         var executable = Environment.ProcessPath;
         if (string.IsNullOrEmpty(executable) || !Path.IsPathFullyQualified(executable))
         {
