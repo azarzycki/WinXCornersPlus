@@ -16,12 +16,21 @@ internal sealed class ProcessLauncher : IProcessLauncher
     private readonly BoundedLog _log;
     private readonly SystemDirectories _directories;
     private readonly bool _isElevated;
+    private readonly ShellExecuteLauncher _deElevatedLaunch;
 
-    internal ProcessLauncher(BoundedLog log, SystemDirectories directories, bool isElevated)
+    /// <param name="log">Where every outcome is written.</param>
+    /// <param name="directories">System folders Core plans with.</param>
+    /// <param name="isElevated">Whether this process is elevated; then every launch is de-elevated.</param>
+    /// <param name="deElevatedLaunch">
+    /// Performs a de-elevated launch; defaults to <see cref="DeElevatedLauncher.TryShellExecute"/>. Tests substitute
+    /// it to prove that an elevated app never falls back to starting anything itself.
+    /// </param>
+    internal ProcessLauncher(BoundedLog log, SystemDirectories directories, bool isElevated, ShellExecuteLauncher? deElevatedLaunch = null)
     {
         _log = log ?? throw new ArgumentNullException(nameof(log));
         _directories = directories ?? throw new ArgumentNullException(nameof(directories));
         _isElevated = isElevated;
+        _deElevatedLaunch = deElevatedLaunch ?? DeElevatedLauncher.TryShellExecute;
     }
 
     /// <summary>Plans and performs <paramref name="request"/>. Logs the outcome; never throws for a launch failure.</summary>
@@ -39,7 +48,7 @@ internal sealed class ProcessLauncher : IProcessLauncher
         _log.Add($"Launching {description}");
 
         var succeeded = plan.Integrity == LaunchIntegrity.DeElevated
-            ? DeElevatedLauncher.TryShellExecute(plan.FileName, plan.Arguments, plan.WorkingDirectory, plan.Hidden, out error)
+            ? _deElevatedLaunch(plan.FileName, plan.Arguments, plan.WorkingDirectory, plan.Hidden, out error)
             : TryStartSameRights(plan, out error);
 
         _log.Add(succeeded ? $"Launched {description}" : $"Launch failed: {error} ({description})");
@@ -88,3 +97,6 @@ internal sealed class ProcessLauncher : IProcessLauncher
         return false;
     }
 }
+
+/// <summary>The shape of <see cref="DeElevatedLauncher.TryShellExecute"/>.</summary>
+internal delegate bool ShellExecuteLauncher(string file, string arguments, string workingDirectory, bool hidden, out string? error);

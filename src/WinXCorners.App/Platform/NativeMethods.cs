@@ -220,6 +220,10 @@ internal static class NativeMethods
         return IntPtr.Size == 8 ? GetWindowLongPtr64(hWnd, nIndex) : new IntPtr(GetWindowLong32(hWnd, nIndex));
     }
 
+    /// <summary>Windows 10 1607 and later; callers handle EntryPointNotFoundException on older builds.</summary>
+    [DllImport("user32.dll", ExactSpelling = true)]
+    internal static extern int GetDpiForWindow(IntPtr hwnd);
+
     [DllImport("user32.dll")]
     internal static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
 

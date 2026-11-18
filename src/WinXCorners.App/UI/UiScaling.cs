@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using WinXCorners.Core.Layout;
 
 namespace WinXCorners.App;
@@ -62,7 +61,7 @@ internal sealed class UiScaling
         {
             try
             {
-                var dpi = GetDpiForWindow(control.Handle);
+                var dpi = NativeMethods.GetDpiForWindow(control.Handle);
                 if (dpi > 0)
                 {
                     return DpiScale.FactorFromDpi(dpi);
@@ -99,8 +98,4 @@ internal sealed class UiScaling
 
         return result;
     }
-
-    [DllImport("user32.dll", ExactSpelling = true)]
-    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-    private static extern int GetDpiForWindow(IntPtr hwnd);
 }
