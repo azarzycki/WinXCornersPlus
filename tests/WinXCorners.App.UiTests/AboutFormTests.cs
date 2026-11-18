@@ -22,6 +22,12 @@ public sealed class AboutFormTests
             Assert.Equal(host.SettingsPath, path.Text);
             Assert.Equal(host.SettingsPath, form.PathToolTip.GetToolTip(path));
 
+            // Regression: the links were drawn in LinkLabel's default dark blue, unreadable in dark mode.
+            foreach (var name in new[] { "asteskiLink", "vhanlaLink" })
+            {
+                Assert.Equal(ThemeHelper.Colors.GetLinkColor(), Find.Control<LinkLabel>(form, name).LinkColor);
+            }
+
             Find.ClickLink(Find.Control<LinkLabel>(form, "asteskiLink"));
             Find.ClickLink(Find.Control<LinkLabel>(form, "vhanlaLink"));
             Assert.Equal([AboutForm.AsteskiUrl, AboutForm.VhanlaUrl], host.OpenedLinks);

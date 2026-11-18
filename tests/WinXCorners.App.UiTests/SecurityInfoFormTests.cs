@@ -23,6 +23,12 @@ public sealed class SecurityInfoFormTests
             Assert.Equal("Running as administrator: No", Find.Control<Label>(form, "elevatedLabel").Text);
             Assert.Equal(FakeAppHost.ProtectedFolder, Find.Control<TextBox>(form, "programFolderBox").Text);
             Assert.Equal(host.SettingsPath, Find.Control<TextBox>(form, "settingsPathBox").Text);
+
+            // Regression: the sentence was below the fold, under the facts; what needs attention now comes first.
+            var label = Find.Control<Label>(form, "nothingToReportLabel");
+            var scroller = Find.Control<Panel>(form, "securityScroller");
+            var top = scroller.PointToClient(label.PointToScreen(Point.Empty)).Y;
+            Assert.True(top + label.Height <= scroller.ClientSize.Height, "The nothing-to-report sentence needs scrolling to be seen.");
             LayoutAssert.IsSound(form);
             Screenshot.Capture(form, $"security-nothing-{theme.ToString().ToLowerInvariant()}");
         });
@@ -62,6 +68,16 @@ public sealed class SecurityInfoFormTests
 
             Assert.Null(Find.Optional<Label>(form, "nothingToReportLabel"));
             Assert.Equal("Running as administrator: Yes", Find.Control<Label>(form, "elevatedLabel").Text);
+
+            // Regression: a long path was cut off in a one-line box; the boxes now wrap and fit their text.
+            foreach (var name in new[] { "programFolderBox", "settingsPathBox" })
+            {
+                var box = Find.Control<TextBox>(form, name);
+                var last = box.GetPositionFromCharIndex(box.TextLength - 1);
+                Assert.True(last.Y + box.Font.Height <= box.ClientSize.Height && last.X < box.ClientSize.Width,
+                    $"{name}: the end of '{box.Text}' is outside the box ({last}, box {box.ClientSize}).");
+            }
+
             LayoutAssert.IsSound(form);
             Screenshot.Capture(form, $"security-risks-{theme.ToString().ToLowerInvariant()}");
 

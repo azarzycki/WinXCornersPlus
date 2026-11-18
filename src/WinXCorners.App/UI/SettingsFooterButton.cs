@@ -18,6 +18,15 @@ internal sealed class SettingsFooterButton : Button
         TabStop = true;
     }
 
+    /// <summary>
+    /// Whether this is the button Enter would press: the window's AcceptButton unless another button has the focus.
+    /// <see cref="ButtonBase.IsDefault"/> alone is only updated once the window has been activated, so a window
+    /// shown in the background would otherwise not mark its default button.
+    /// </summary>
+    private bool ShowsAsDefault =>
+        IsDefault ||
+        (FindForm() is { } form && ReferenceEquals(form.AcceptButton, this) && form.ActiveControl is not IButtonControl);
+
     protected override void OnPaint(PaintEventArgs e)
     {
         if (!ThemeHelper.IsLightTheme)
@@ -34,7 +43,7 @@ internal sealed class SettingsFooterButton : Button
                 ? PushButtonState.Pressed
                 : _isHovered
                     ? PushButtonState.Hot
-                    : IsDefault
+                    : ShowsAsDefault
                         ? PushButtonState.Default
                         : PushButtonState.Normal
             : PushButtonState.Disabled;
@@ -58,7 +67,7 @@ internal sealed class SettingsFooterButton : Button
                 : _isHovered
                     ? ThemeHelper.Colors.GetSettingsFooterButtonHoverBackgroundColor()
                     : ThemeHelper.Colors.GetSettingsFooterButtonBackgroundColor();
-        var emphasized = Enabled && (IsDefault || Focused);
+        var emphasized = Enabled && (ShowsAsDefault || Focused);
         var border = !Enabled
             ? ThemeHelper.Colors.GetSettingsDisabledButtonBorderColor()
             : emphasized

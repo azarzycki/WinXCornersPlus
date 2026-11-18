@@ -162,6 +162,8 @@ internal sealed class AboutForm : Form
 
     private static LinkLabel CreateLink(string name, string url, int y)
     {
+        // LinkLabel draws links in LinkColor (dark blue by default, unreadable on the dark background), not in
+        // ForeColor; the theme's link colour is used, as in the Settings window.
         return new LinkLabel
         {
             Name = name,
@@ -170,7 +172,10 @@ internal sealed class AboutForm : Form
             Location = new Point(20, y),
             Size = new Size(190, 16),
             BackColor = Color.Transparent,
-            ForeColor = ThemeHelper.Colors.GetAccentColor()
+            ForeColor = ThemeHelper.Colors.GetForegroundColor(),
+            LinkColor = ThemeHelper.Colors.GetLinkColor(),
+            ActiveLinkColor = ThemeHelper.Colors.GetLinkColor(),
+            VisitedLinkColor = ThemeHelper.Colors.GetLinkColor()
         };
     }
 

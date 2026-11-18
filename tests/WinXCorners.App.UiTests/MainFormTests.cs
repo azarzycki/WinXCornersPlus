@@ -39,10 +39,11 @@ public sealed class MainFormTests
     public void Flyout_OpensAtCoresAnchor_AndCloses(Theme theme)
     {
         using var themeScope = ThemeScope.Use(theme);
-        using var env = new MainFormEnvironment();
+        using var env = new MainFormEnvironment(defaultCorners: true);
         Ui.Run(() =>
         {
             using var form = env.CreateForm();
+            Assert.False(form.IsStarted); // no hot-corner timer: the default actions cannot run
             form.Flyout.Open();
             Ui.Pump(600);
             Assert.True(form.IsFlyoutOpen);
@@ -309,20 +310,26 @@ internal sealed class MainFormEnvironment : IDisposable
     private readonly string _directory;
     private readonly SettingsPaths _paths;
 
-    internal MainFormEnvironment()
+    /// <param name="defaultCorners">
+    /// Keep the default corner actions (for the flyout's screenshot). Only for tests that never call Start(), which is
+    /// what starts the hot-corner timer.
+    /// </param>
+    internal MainFormEnvironment(bool defaultCorners = false)
     {
         _directory = Path.Combine(Path.GetTempPath(), "wxc-ui-main-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_directory);
         _paths = new SettingsPaths(Path.Combine(_directory, SettingsPaths.FileName), null);
 
         // Written before the host loads, so no corner can ever run a real action during a test.
-        var initial = new ApplicationSettings
-        {
-            TopLeftActionId = ActionIds.None,
-            TopRightActionId = ActionIds.None,
-            BottomLeftActionId = ActionIds.None,
-            BottomRightActionId = ActionIds.None
-        };
+        var initial = defaultCorners
+            ? new ApplicationSettings()
+            : new ApplicationSettings
+            {
+                TopLeftActionId = ActionIds.None,
+                TopRightActionId = ActionIds.None,
+                BottomLeftActionId = ActionIds.None,
+                BottomRightActionId = ActionIds.None
+            };
         Assert.True(new SettingsStore(_paths).Save(initial).Succeeded);
 
         Host = AppHost.Create(CommandLineOptions.Parse([]), _paths, new MemoryApprovals(), isElevated: false,

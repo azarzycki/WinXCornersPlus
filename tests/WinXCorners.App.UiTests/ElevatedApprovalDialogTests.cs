@@ -54,6 +54,14 @@ public sealed class ElevatedApprovalDialogTests
             Assert.Contains(seal.Differences, static line => line.Contains("Rotate-Wallpaper-And-Clean-Downloads.ps1", StringComparison.Ordinal));
             AssertCommon(dialog, risks);
             Screenshot.Capture(dialog, $"approval-changed-{theme.ToString().ToLowerInvariant()}");
+
+            var scroller = Find.Control<Panel>(dialog, "approvalScroller");
+            if (scroller.AutoScroll)
+            {
+                scroller.AutoScrollPosition = new Point(0, scroller.DisplayRectangle.Height);
+                Ui.Pump(50);
+                Screenshot.Capture(dialog, $"approval-changed-{theme.ToString().ToLowerInvariant()}-end");
+            }
         });
     }
 
@@ -131,8 +139,9 @@ public sealed class ElevatedApprovalDialogTests
         var lastLine = box.GetLineFromCharIndex(Math.Max(0, box.TextLength - 1));
         var lastLineTop = box.GetPositionFromCharIndex(Math.Max(0, box.TextLength - 1)).Y;
         var fits = lastLineTop + box.Font.Height <= box.ClientSize.Height;
-        Assert.True(fits || box.ScrollBars == ScrollBars.Vertical,
-            $"{box.Name}: {lastLine + 1} wrapped lines do not fit in {box.ClientSize.Height} px and there is no scroll bar.");
+        // The lists never scroll on their own (only the dialog body does), so the last line must be inside the box.
+        Assert.Equal(ScrollBars.None, box.ScrollBars);
+        Assert.True(fits, $"{box.Name}: {lastLine + 1} wrapped lines do not fit in {box.ClientSize.Height} px.");
     }
 
     /// <summary>What the user approved last time: two corners and one plain custom command.</summary>

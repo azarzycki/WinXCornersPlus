@@ -16,7 +16,9 @@ internal static class ElevatedApprovalDialog
         "These settings are stored in a file that any program running under your account can change, " +
         "which is why you are being asked.";
 
-    private const int ListMaxHeight = 180;
+    // The two lists are as tall as their text: only the dialog body scrolls (inside 70% of the screen), so there is
+    // never a scroll bar inside a scroll bar and nothing the user approves is hidden in a half-visible box.
+    private const int ListMaxHeight = int.MaxValue;
 
     /// <summary>True only when the user clicked "Approve and continue".</summary>
     internal static bool Ask(IWin32Window? owner, ApplicationSettings settings, SealCheck seal, IReadOnlyList<RiskItem> risks)
@@ -57,7 +59,7 @@ internal static class ElevatedApprovalDialog
         if (differences.Count > 0)
         {
             AddSectionTitle(body, form, "What changed", px);
-            var changed = DialogLayout.CreateReadOnlyList(differences, form.Font, width, px(ListMaxHeight), scrollBar,
+            var changed = DialogLayout.CreateReadOnlyList(differences, form.Font, width, ListMaxHeight, scrollBar,
                 "whatChangedBox", px);
             DialogLayout.AddRow(body, changed, new Padding(0, 0, 0, px(14)));
         }
@@ -65,7 +67,7 @@ internal static class ElevatedApprovalDialog
         AddSectionTitle(body, form, "What will run", px);
         var monospace = new Font("Consolas", 9F, FontStyle.Regular, GraphicsUnit.Point);
         form.Resources.Add(monospace);
-        var willRun = DialogLayout.CreateReadOnlyList(summary, monospace, width, px(ListMaxHeight), scrollBar,
+        var willRun = DialogLayout.CreateReadOnlyList(summary, monospace, width, ListMaxHeight, scrollBar,
             "whatWillRunBox", px);
         DialogLayout.AddRow(body, willRun, new Padding(0, 0, 0, px(14)));
 
