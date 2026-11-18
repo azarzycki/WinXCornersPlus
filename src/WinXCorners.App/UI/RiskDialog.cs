@@ -239,12 +239,14 @@ internal sealed class ConsentForm : Form
         DialogLayout.AddRow(root, buttonRow, new Padding(0, Px(8), 0, 0));
         buttonRow.Anchor = AnchorStyles.Right | AnchorStyles.Top;
 
+        // The content must be part of the form before a control in it can be made the active control (otherwise
+        // WinForms throws "Invisible or disabled control cannot be activated" and no dialog can be built).
+        Controls.Add(root);
+
         // Consent must be a deliberate click: Enter and Esc both mean "cancel".
         AcceptButton = _cancelButton;
         CancelButton = _cancelButton;
         ActiveControl = _cancelButton;
-
-        Controls.Add(root);
         ResumeLayout(true);
     }
 

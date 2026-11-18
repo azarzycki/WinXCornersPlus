@@ -1,6 +1,7 @@
 using WinXCorners.App.UiTests.Infrastructure;
 using WinXCorners.Core.Actions;
 using WinXCorners.Core.HotCorners;
+using WinXCorners.Core.Layout;
 using WinXCorners.Core.Model;
 using WinXCorners.Core.Security;
 
@@ -304,7 +305,7 @@ public sealed class AdvancedFormTests
         });
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(1.25)]
     [InlineData(1.5)]
     [InlineData(2.0)]
@@ -319,6 +320,7 @@ public sealed class AdvancedFormTests
             var simulation = DpiSimulation.Apply(form, form.Scaling, factor);
             try
             {
+                DpiSimulation.SkipIfScreenTooSmall(form, DpiScale.Scale(new Size(438, 452), factor));
                 var percent = (int)Math.Round(factor * 100);
                 foreach (var tab in new[] { "delays", "advanced" })
                 {

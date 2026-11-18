@@ -75,7 +75,7 @@ internal sealed class AboutForm : Form
             AutoSize = false,
             UseMnemonic = false,
             Location = new Point(20, 78),
-            Size = new Size(190, 32),
+            Size = new Size(190, 36),
             BackColor = Color.Transparent,
             ForeColor = ThemeHelper.Colors.GetForegroundColor()
         };

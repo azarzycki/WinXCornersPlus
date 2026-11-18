@@ -5,6 +5,8 @@ namespace WinXCorners.App;
 /// <summary>The themed flat button used in the Settings window footer (OK, Apply, Cancel).</summary>
 internal sealed class SettingsFooterButton : Button
 {
+    private static readonly Color DarkDisabledForeground = Color.FromArgb(140, 140, 140);
+
     private bool _isHovered;
     private bool _isPressed;
 
@@ -18,17 +20,76 @@ internal sealed class SettingsFooterButton : Button
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        if (!ThemeHelper.IsLightTheme)
+        {
+            PaintDark(e.Graphics);
+            return;
+        }
+
         ButtonRenderer.DrawParentBackground(e.Graphics, ClientRectangle, this);
 
+        // The window's default button (AcceptButton) gets the accent outline, as native buttons do.
         var state = Enabled
             ? _isPressed
                 ? PushButtonState.Pressed
                 : _isHovered
                     ? PushButtonState.Hot
-                    : PushButtonState.Normal
+                    : IsDefault
+                        ? PushButtonState.Default
+                        : PushButtonState.Normal
             : PushButtonState.Disabled;
 
-        ButtonRenderer.DrawButton(e.Graphics, ClientRectangle, Text, Font, Focused, state);
+        ButtonRenderer.DrawButton(e.Graphics, ClientRectangle, Text, Font, Focused && ShowFocusCues, state);
+    }
+
+    /// <summary>
+    /// The visual-styles renderer only draws light buttons, which glare in a dark window, so dark mode paints a
+    /// flat button from the theme palette: accent outline for the default or focused button, dimmed when disabled.
+    /// </summary>
+    private void PaintDark(Graphics graphics)
+    {
+        var bounds = ClientRectangle;
+        graphics.Clear(Parent?.BackColor ?? ThemeHelper.Colors.GetBackgroundColor());
+
+        var background = !Enabled
+            ? ThemeHelper.Colors.GetSettingsDisabledButtonBackgroundColor()
+            : _isPressed
+                ? ThemeHelper.Colors.GetSettingsFooterButtonPressedBackgroundColor()
+                : _isHovered
+                    ? ThemeHelper.Colors.GetSettingsFooterButtonHoverBackgroundColor()
+                    : ThemeHelper.Colors.GetSettingsFooterButtonBackgroundColor();
+        var emphasized = Enabled && (IsDefault || Focused);
+        var border = !Enabled
+            ? ThemeHelper.Colors.GetSettingsDisabledButtonBorderColor()
+            : emphasized
+                ? ThemeHelper.Colors.GetAccentColor()
+                : ThemeHelper.Colors.GetSettingsFooterButtonBorderColor();
+        // The palette's disabled text colour (75, 75, 75) is meant for light backgrounds and is nearly invisible on
+        // the dark disabled fill, so dark mode uses a mid grey that is readable but clearly inactive.
+        var foreground = Enabled ? ThemeHelper.Colors.GetForegroundColor() : DarkDisabledForeground;
+
+        using (var brush = new SolidBrush(background))
+        {
+            graphics.FillRectangle(brush, bounds);
+        }
+
+        using (var pen = new Pen(border, emphasized ? 2 : 1) { Alignment = System.Drawing.Drawing2D.PenAlignment.Inset })
+        {
+            graphics.DrawRectangle(pen, new Rectangle(bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1));
+        }
+
+        var flags = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine;
+        if (!ShowKeyboardCues)
+        {
+            flags |= TextFormatFlags.HidePrefix;
+        }
+
+        TextRenderer.DrawText(graphics, Text, Font, bounds, foreground, flags);
+
+        if (Focused && ShowFocusCues)
+        {
+            ControlPaint.DrawFocusRectangle(graphics, Rectangle.Inflate(bounds, -4, -4), foreground, background);
+        }
     }
 
     protected override void OnMouseEnter(EventArgs e)

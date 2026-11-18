@@ -28,6 +28,17 @@ internal sealed class DpiSimulation : IDisposable
         Ui.Pump(100);
     }
 
+    /// <summary>
+    /// Skips the test when the scaled window cannot fit on this machine's screen: Windows will not make a window
+    /// larger than the screen, so its layout at that scale cannot be checked here.
+    /// </summary>
+    internal static void SkipIfScreenTooSmall(Form form, Size wantedClientSize)
+    {
+        var screen = Screen.FromControl(form).Bounds;
+        Skip.If(form.ClientSize.Width < wantedClientSize.Width || form.ClientSize.Height < wantedClientSize.Height,
+            $"The screen ({screen.Width}x{screen.Height}) is too small for a {wantedClientSize.Width}x{wantedClientSize.Height} window at this scale.");
+    }
+
     internal static DpiSimulation Apply(Form form, UiScaling scaling, double factor) => new(form, scaling, factor);
 
     public void Dispose()

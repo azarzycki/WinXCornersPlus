@@ -825,7 +825,8 @@ internal sealed class AdvancedForm : Form
 
     private static ComboBox CreateCombo(string name, Point location, Size size)
     {
-        return new ComboBox
+        var light = ThemeHelper.IsLightTheme;
+        var combo = new ComboBox
         {
             Name = name,
             Location = location,
@@ -833,8 +834,17 @@ internal sealed class AdvancedForm : Form
             DropDownStyle = ComboBoxStyle.DropDownList,
             BackColor = ThemeHelper.Colors.GetControlBackgroundColor(),
             ForeColor = ThemeHelper.Colors.GetForegroundColor(),
-            FlatStyle = FlatStyle.Flat
+            // A flat combo box always draws a light drop-down button; in dark mode the themed one is used instead,
+            // with the system's dark combo box theme (as the File dialog uses).
+            FlatStyle = light ? FlatStyle.Flat : FlatStyle.Standard
         };
+
+        if (!light)
+        {
+            combo.HandleCreated += static (sender, args) => _ = NativeMethods.SetWindowTheme(((Control)sender!).Handle, "DarkMode_CFD", null);
+        }
+
+        return combo;
     }
 
     private static ComboBox CreateDelayCombo(string name, Point location)

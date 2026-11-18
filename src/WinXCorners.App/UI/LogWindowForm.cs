@@ -79,11 +79,22 @@ internal sealed class LogWindowForm : Form
             Padding = new Padding(0, 6, 0, 0)
         };
 
-        // Docking starts from the control added last, which takes the outermost place; so with this order the
-        // title is on the left and the buttons read Copy all, Clear, Close with Close at the far right.
-        topPanel.Controls.Add(copyButton);
-        topPanel.Controls.Add(clearButton);
-        topPanel.Controls.Add(closeButton);
+        // The buttons sit in a row with a small gap between them (docking them directly would make them touch).
+        var buttonRow = new FlowLayoutPanel
+        {
+            Name = "buttonRow",
+            Dock = DockStyle.Right,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Color.Transparent
+        };
+        buttonRow.Controls.AddRange([copyButton, clearButton, closeButton]);
+
+        topPanel.Controls.Add(buttonRow);
         topPanel.Controls.Add(title);
 
         Controls.Add(_logText);
@@ -222,14 +233,13 @@ internal sealed class LogWindowForm : Form
 
     private static Button CreateButton(string text, string name)
     {
-        return new Button
+        // The themed button: native look in light mode, drawn from the palette in dark mode.
+        return new SettingsFooterButton
         {
             Name = name,
             Text = text,
-            Dock = DockStyle.Right,
-            Width = 90,
-            BackColor = ThemeHelper.Colors.GetControlBackgroundColor(),
-            ForeColor = ThemeHelper.Colors.GetForegroundColor()
+            Size = new Size(90, 26),
+            Margin = new Padding(6, 0, 0, 0)
         };
     }
 }

@@ -37,6 +37,46 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # The hosted runners start at 1024x768, too small for the Settings window at a simulated 200% scale; a larger
+      # desktop is tried (best effort). Other windows (the runner's consoles) are minimized so that the screen copies
+      # show only the window under test.
+      - name: Prepare the desktop
+        shell: pwsh
+        run: |
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Display {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+            public struct DEVMODE {
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+              public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+              public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
+              public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+              public short dmLogPixels;
+              public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+              public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
+            }
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool EnumDisplaySettings(string device, int mode, ref DEVMODE dm);
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int ChangeDisplaySettings(ref DEVMODE dm, int flags);
+            public static int Set(int width, int height) {
+              var dm = new DEVMODE();
+              dm.dmSize = (short)Marshal.SizeOf(dm);
+              if (!EnumDisplaySettings(null, -1, ref dm)) return -100;
+              dm.dmPelsWidth = width; dm.dmPelsHeight = height; dm.dmFields = 0x80000 | 0x100000;
+              return ChangeDisplaySettings(ref dm, 0);
+            }
+          }
+          "@
+          foreach ($size in @(@(1920, 1080), @(1600, 1200), @(1280, 1024))) {
+            $result = [Display]::Set($size[0], $size[1])
+            "ChangeDisplaySettings $($size[0])x$($size[1]): $result"
+            if ($result -eq 0) { break }
+          }
+          (New-Object -ComObject Shell.Application).MinimizeAll()
+          Start-Sleep -Seconds 2
+
       - name: Show OS build, session and screen
         shell: pwsh
         run: |

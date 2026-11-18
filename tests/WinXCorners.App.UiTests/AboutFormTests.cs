@@ -1,4 +1,5 @@
 using WinXCorners.App.UiTests.Infrastructure;
+using WinXCorners.Core.Layout;
 
 namespace WinXCorners.App.UiTests;
 
@@ -54,7 +55,7 @@ public sealed class AboutFormTests
         });
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData(1.25)]
     [InlineData(1.5)]
     [InlineData(2.0)]
@@ -69,6 +70,7 @@ public sealed class AboutFormTests
             var simulation = DpiSimulation.Apply(form, form.Scaling, factor);
             try
             {
+                DpiSimulation.SkipIfScreenTooSmall(form, DpiScale.Scale(new Size(228, 222), factor));
                 LayoutAssert.IsSound(form);
                 Screenshot.Capture(form, $"about-{(int)Math.Round(factor * 100)}pct");
             }
