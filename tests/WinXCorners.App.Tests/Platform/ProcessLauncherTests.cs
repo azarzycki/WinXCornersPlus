@@ -46,7 +46,7 @@ public sealed class ProcessLauncherTests : IDisposable
     public void A_custom_command_runs_in_the_planned_working_directory()
     {
         var marker = _temp.File("cd.txt");
-        var launcher = new ProcessLauncher(_log, Directories, isElevated: false);
+        var launcher = new ProcessLauncher(_log, Directories, ElevationMode.NotElevated);
 
         var launched = launcher.TryLaunch(CustomCmd($"echo %CD%> \"{marker}\"& echo here> relative.txt"), out var error);
 
@@ -63,7 +63,7 @@ public sealed class ProcessLauncherTests : IDisposable
     public void A_hidden_custom_command_still_runs()
     {
         var marker = _temp.File("hidden.txt");
-        var launcher = new ProcessLauncher(_log, Directories, isElevated: false);
+        var launcher = new ProcessLauncher(_log, Directories, ElevationMode.NotElevated);
 
         Assert.True(launcher.TryLaunch(CustomCmd($"echo hidden> \"{marker}\"", hidden: true), out var error), error);
 
@@ -90,7 +90,7 @@ public sealed class ProcessLauncherTests : IDisposable
         foreach (var elevated in new[] { false, true })
         {
             var deElevatedCalls = 0;
-            var launcher = new ProcessLauncher(_log, Directories, elevated, (string _, string _, string _, bool _, out string? e) =>
+            var launcher = new ProcessLauncher(_log, Directories, elevated ? ElevationMode.ElevatedWithStandardShell : ElevationMode.NotElevated, (string _, string _, string _, bool _, out string? e) =>
             {
                 deElevatedCalls++;
                 e = null;
@@ -110,7 +110,7 @@ public sealed class ProcessLauncherTests : IDisposable
     [Fact]
     public void A_missing_program_fails_without_throwing_or_showing_UI()
     {
-        var launcher = new ProcessLauncher(_log, Directories, isElevated: false);
+        var launcher = new ProcessLauncher(_log, Directories, ElevationMode.NotElevated);
 
         var launched = launcher.TryLaunch(
             new LaunchRequest(_temp.File("does-not-exist.exe"), string.Empty, false, LaunchTargetKind.CustomCommand), out var error);
@@ -135,7 +135,7 @@ public sealed class ProcessLauncherTests : IDisposable
     public void When_elevated_every_kind_goes_through_the_de_elevated_path(string kind)
     {
         var calls = new List<(string File, string Arguments, string WorkingDirectory, bool Hidden)>();
-        var launcher = new ProcessLauncher(_log, Directories, isElevated: true, (string file, string arguments, string workingDirectory, bool hidden, out string? e) =>
+        var launcher = new ProcessLauncher(_log, Directories, ElevationMode.ElevatedWithStandardShell, (string file, string arguments, string workingDirectory, bool hidden, out string? e) =>
         {
             calls.Add((file, arguments, workingDirectory, hidden));
             e = null;
@@ -146,7 +146,7 @@ public sealed class ProcessLauncherTests : IDisposable
         Assert.True(launcher.TryLaunch(request, out var error), error);
 
         var call = Assert.Single(calls);
-        Assert.True(LaunchPlanner.TryPlan(request, true, Directories, out var plan, out _));
+        Assert.True(LaunchPlanner.TryPlan(request, ElevationMode.ElevatedWithStandardShell, Directories, out var plan, out _));
         Assert.Equal(plan.FileName, call.File);
         Assert.Equal(plan.Arguments, call.Arguments);
         Assert.Equal(plan.WorkingDirectory, call.WorkingDirectory);
@@ -159,7 +159,7 @@ public sealed class ProcessLauncherTests : IDisposable
     public void When_elevated_and_the_de_elevated_path_fails_nothing_is_started(string kind)
     {
         var marker = _temp.File("leak.txt");
-        var launcher = new ProcessLauncher(_log, Directories, isElevated: true, (string _, string _, string _, bool _, out string? e) =>
+        var launcher = new ProcessLauncher(_log, Directories, ElevationMode.ElevatedWithStandardShell, (string _, string _, string _, bool _, out string? e) =>
         {
             e = "no shell";
             return false;
@@ -183,31 +183,83 @@ public sealed class ProcessLauncherTests : IDisposable
     }
 
     /// <summary>
-    /// The de-elevation mechanism: the shell (explorer.exe) performs the ShellExecute, so the child is explorer's child
-    /// and gets explorer's token. Without a desktop shell the call must fail and start nothing (fail closed).
+    /// Review V2 D4, the token check itself: this process's elevation state as the app classifies it, and the desktop
+    /// shell's own token, must agree with each other. On an account with User Account Control on (a split token) the
+    /// shell must not be elevated; with UAC off or on the built-in Administrator account, everything is elevated, and
+    /// the shell check must say so. The runner's state is written to the job summary.
     /// </summary>
     [SkippableFact]
-    public void De_elevated_launch_is_performed_by_the_desktop_shell_or_fails_closed()
+    public void The_elevation_state_and_the_shell_token_check_agree()
     {
-        var marker = _temp.File("parent.txt");
+        var type = ProcessElevation.CurrentTokenType();
+        var mode = ProcessElevation.CurrentMode;
+        var hasShell = TestEnvironment.TryGetDesktopShell(out var shellProcessId);
+        var shellElevated = hasShell ? ProcessElevation.IsProcessElevated(shellProcessId) : null;
+        var check = DeElevatedLauncher.CheckShellToken(IntPtr.Zero);
+        var fact = $"Elevation: test process elevated={ProcessElevation.IsElevated}, token type={type}, app state={mode}; " +
+                   $"desktop shell: {(hasShell ? $"explorer.exe pid {shellProcessId}, elevated={shellElevated?.ToString() ?? "unknown"}" : "none")}; " +
+                   $"shell check: {check ?? "passes (launches go through the shell)"}";
+        _output.WriteLine(fact);
+        TestEnvironment.RecordFact(fact);
+
+        Assert.Equal(ElevationModes.Classify(Environment.IsPrivilegedProcess, type), mode);
+        Assert.False(ProcessElevation.IsProcessElevated(-1).HasValue);
+        Assert.False(ProcessElevation.IsProcessElevated(int.MaxValue - 3).HasValue);
+        Assert.Equal(ProcessElevation.IsElevated, ProcessElevation.IsProcessElevated(Environment.ProcessId));
+        Skip.IfNot(hasShell, "No desktop shell (explorer.exe) in this session, so there is no shell token to check.");
+
+        Assert.NotNull(shellElevated);
+        if (shellElevated == true)
+        {
+            Assert.Contains("itself runs as administrator", check, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Null(check);
+        }
+
+        if (mode == ElevationMode.ElevatedWithoutStandardRights)
+        {
+            // No split token while elevated: UAC is off or this is the built-in Administrator, so explorer is elevated too.
+            Assert.True(shellElevated, "With no normal-rights context on the account the shell should be elevated as well.");
+        }
+        else if (mode == ElevationMode.NotElevated)
+        {
+            Assert.False(shellElevated, "A normal-rights process found an elevated shell.");
+        }
+    }
+
+    /// <summary>
+    /// The de-elevation mechanism end to end (review V2 test gap: the child's token was never checked). The shell
+    /// (explorer.exe) performs the ShellExecute, so the child is explorer's child and gets explorer's token: it must
+    /// NOT be elevated. Where the shell itself is elevated, or there is no desktop shell, the call must fail and start
+    /// nothing (fail closed).
+    /// </summary>
+    [SkippableFact]
+    public void De_elevated_launch_gives_the_child_a_non_elevated_token_or_fails_closed()
+    {
+        var marker = _temp.File("child.txt");
         var script = "$p = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; " +
-                     $"Set-Content -LiteralPath '{marker}' -Value $p";
+                     $"Set-Content -LiteralPath '{marker}' -Value (\"$PID $p\"); Start-Sleep -Seconds 30";
         var powershell = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
         var arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"{script}\"";
         var hasShell = TestEnvironment.TryGetDesktopShell(out var shellProcessId);
-        _output.WriteLine($"{TestEnvironment.Describe()}; desktop shell: {(hasShell ? $"explorer.exe pid {shellProcessId}" : "none")}");
+        var shellElevated = hasShell ? ProcessElevation.IsProcessElevated(shellProcessId) : null;
+        _output.WriteLine($"{TestEnvironment.Describe()}; desktop shell: {(hasShell ? $"explorer.exe pid {shellProcessId}, elevated={shellElevated}" : "none")}");
 
         string? error = null;
         var launched = Sta.Run(() => DeElevatedLauncher.TryShellExecute(powershell, arguments, _temp.Path, hidden: true, out error));
         _output.WriteLine($"launched: {launched}, error: {error}");
 
-        if (!hasShell)
+        if (!hasShell || shellElevated != false)
         {
-            Assert.False(launched, "Without a desktop shell the de-elevated launch must fail.");
+            Assert.False(launched, "Without a normal-rights desktop shell the de-elevated launch must fail.");
             Assert.False(string.IsNullOrWhiteSpace(error));
             Thread.Sleep(3000);
-            Assert.False(File.Exists(marker), "Something was started although the shell could not be reached.");
-            throw new SkipException("No desktop shell (explorer.exe) in this session: only the fail-closed half was verified.");
+            Assert.False(File.Exists(marker), "Something was started although the shell could not give it normal rights.");
+            var reason = !hasShell ? "No desktop shell (explorer.exe) in this session" : "The desktop shell itself runs as administrator";
+            TestEnvironment.RecordFact($"De-elevated launch: {reason}; it failed closed as required.");
+            throw new SkipException($"{reason}: only the fail-closed half was verified.");
         }
 
         if (!launched && error is not null && error.Contains("(0x00000001)", StringComparison.Ordinal))
@@ -216,6 +268,7 @@ public sealed class ProcessLauncherTests : IDisposable
             // in this session (seen on the windows-11-arm image). The launcher must then fail closed.
             Thread.Sleep(3000);
             Assert.False(File.Exists(marker), "Something was started although the shell had no desktop to launch from.");
+            TestEnvironment.RecordFact("De-elevated launch: explorer.exe registered no desktop view (S_FALSE); it failed closed as required.");
             throw new SkipException(
                 "explorer.exe runs but has not registered a desktop view with IShellWindows (S_FALSE) in this session; " +
                 "only the fail-closed half was verified.");
@@ -224,8 +277,40 @@ public sealed class ProcessLauncherTests : IDisposable
         Assert.True(launched, error);
         var text = Poll.WaitForFile(marker, ChildTimeout);
         Assert.NotNull(text);
-        var parentId = int.Parse(text.Trim(), System.Globalization.CultureInfo.InvariantCulture);
-        using var parent = Process.GetProcessById(parentId);
-        Assert.Equal("explorer", parent.ProcessName, ignoreCase: true);
+        var ids = text.Trim().Split(' ').Select(static t => int.Parse(t, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+        using var child = Process.GetProcessById(ids[0]);
+        try
+        {
+            var childElevated = ProcessElevation.IsProcessElevated(ids[0]);
+            _output.WriteLine($"child pid {ids[0]}, parent {ids[1]}, child elevated: {childElevated}");
+            TestEnvironment.RecordFact($"De-elevated launch: child pid {ids[0]} started by pid {ids[1]}, child token elevated={childElevated}.");
+            Assert.Equal(false, childElevated);
+            using var parent = Process.GetProcessById(ids[1]);
+            Assert.Equal("explorer", parent.ProcessName, ignoreCase: true);
+        }
+        finally
+        {
+            child.Kill(entireProcessTree: true);
+        }
+    }
+
+    [Fact]
+    public void Without_a_standard_rights_context_launches_start_directly_and_say_so()
+    {
+        var marker = _temp.File("direct.txt");
+        var deElevatedCalls = 0;
+        var launcher = new ProcessLauncher(_log, Directories, ElevationMode.ElevatedWithoutStandardRights,
+            (string _, string _, string _, bool _, out string? e) =>
+            {
+                deElevatedCalls++;
+                e = null;
+                return true;
+            });
+
+        Assert.True(launcher.TryLaunch(CustomCmd($"echo direct> \"{marker}\"", hidden: true), out var error), error);
+
+        Assert.Equal(0, deElevatedCalls);
+        Assert.NotNull(Poll.WaitForFile(marker, ChildTimeout));
+        Assert.Contains(_log.Snapshot(), line => line.Contains("with administrator rights", StringComparison.Ordinal));
     }
 }

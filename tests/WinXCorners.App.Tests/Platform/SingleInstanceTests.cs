@@ -245,32 +245,55 @@ public sealed class SingleInstanceTests
         }
     }
 
+    /// <summary>
+    /// Review V2 D6: the user gets only SYNCHRONIZE + MODIFY_STATE (never WRITE_DAC / WRITE_OWNER), OWNER RIGHTS gets the
+    /// same so the owner's implicit WRITE_DAC is gone, and only SYSTEM and Administrators have full control.
+    /// </summary>
     [Fact]
-    public void Both_objects_grant_only_the_current_user_full_control_and_can_be_opened_again()
+    public void Both_objects_grant_the_user_only_wait_and_signal_rights_and_cut_the_owners_implicit_rights()
     {
         var suffix = NewSuffix();
         using var instance = SingleInstance.TryAcquire(null, TimeSpan.Zero, suffix);
         Assert.NotNull(instance);
         var user = WindowsIdentity.GetCurrent().User!;
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
 
         using (var mutex = MutexAcl.OpenExisting(SingleInstance.DefaultMutexName + suffix, MutexRights.ReadPermissions | MutexRights.Synchronize))
         {
             var rules = mutex.GetAccessControl().GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<MutexAccessRule>().ToList();
-            var rule = Assert.Single(rules);
-            Assert.Equal(user, rule.IdentityReference);
-            Assert.Equal(AccessControlType.Allow, rule.AccessControlType);
-            Assert.Equal(MutexRights.FullControl, rule.MutexRights & MutexRights.FullControl);
+            Assert.All(rules, static r => Assert.Equal(AccessControlType.Allow, r.AccessControlType));
+            Assert.Equal(SingleInstance.UserMutexRights, Assert.Single(rules, r => user.Equals(r.IdentityReference)).MutexRights);
+            Assert.Equal(SingleInstance.UserMutexRights, Assert.Single(rules, r => SingleInstance.OwnerRights.Equals(r.IdentityReference)).MutexRights);
+            Assert.Equal(MutexRights.FullControl, Assert.Single(rules, r => system.Equals(r.IdentityReference)).MutexRights);
+            Assert.Equal(MutexRights.FullControl, Assert.Single(rules, r => administrators.Equals(r.IdentityReference)).MutexRights);
+            Assert.Equal(4, rules.Count);
+            Assert.Equal(0, (int)(SingleInstance.UserMutexRights & (MutexRights.ChangePermissions | MutexRights.TakeOwnership | MutexRights.Delete)));
         }
 
         using (var activation = EventWaitHandleAcl.OpenExisting(
                    SingleInstance.DefaultActivationEventName + suffix, EventWaitHandleRights.ReadPermissions | EventWaitHandleRights.Synchronize))
         {
             var rules = activation.GetAccessControl().GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<EventWaitHandleAccessRule>().ToList();
-            var rule = Assert.Single(rules);
-            Assert.Equal(user, rule.IdentityReference);
+            Assert.Equal(SingleInstance.UserEventRights, Assert.Single(rules, r => user.Equals(r.IdentityReference)).EventWaitHandleRights);
+            Assert.Equal(SingleInstance.UserEventRights, Assert.Single(rules, r => SingleInstance.OwnerRights.Equals(r.IdentityReference)).EventWaitHandleRights);
+            Assert.Equal(4, rules.Count);
+            Assert.Equal(0, (int)(SingleInstance.UserEventRights & (EventWaitHandleRights.ChangePermissions | EventWaitHandleRights.TakeOwnership)));
         }
 
-        // The second launch opens the existing objects through the same calls the app uses.
+        // The question an earlier worker could not settle: with only these rights a second launch still opens the
+        // existing objects (the app opens with exactly these rights first) and can wait on and signal them.
+        using (var limited = MutexAcl.OpenExisting(SingleInstance.DefaultMutexName + suffix, SingleInstance.UserMutexRights))
+        {
+            var acquired = OnOtherThread(() => limited.WaitOne(0));
+            Assert.False(acquired, "The running instance holds the mutex.");
+        }
+
+        using (var limited = EventWaitHandleAcl.OpenExisting(SingleInstance.DefaultActivationEventName + suffix, SingleInstance.UserEventRights))
+        {
+            Assert.True(limited.Set());
+        }
+
         var second = OnOtherThread(() =>
         {
             var other = SingleInstance.TryAcquire(null, TimeSpan.Zero, suffix);
@@ -282,23 +305,23 @@ public sealed class SingleInstanceTests
     }
 
     /// <summary>
-    /// Review question (W5): would "synchronize + modify" be enough? MutexAcl.Create opens an existing object asking
-    /// for full access, so with the narrower grant the second launch could not open it. This pins that down on
-    /// real Windows, which is why the product grants full control (to the current user only).
+    /// A name squatted with a DACL that refuses this user even SYNCHRONIZE: the app treats it as "another instance"
+    /// (it cannot tell the difference) and never throws; the activation signal fails, which Program reports.
     /// </summary>
     [Fact]
-    public void A_narrower_grant_would_make_the_second_open_fail_which_is_why_full_control_is_granted()
+    public void A_squatted_name_with_a_hostile_DACL_is_another_instance_and_the_signal_fails()
     {
-        var name = SingleInstance.DefaultMutexName + NewSuffix();
+        var suffix = NewSuffix();
         var user = WindowsIdentity.GetCurrent().User!;
-        var narrow = new MutexSecurity();
-        narrow.AddAccessRule(new MutexAccessRule(user, MutexRights.Synchronize | MutexRights.Modify, AccessControlType.Allow));
-        using var first = MutexAcl.Create(false, name, out var createdNew, narrow);
-        Assert.True(createdNew);
+        var hostile = new MutexSecurity();
+        hostile.AddAccessRule(new MutexAccessRule(user, MutexRights.FullControl, AccessControlType.Deny));
+        using var squatter = MutexAcl.Create(false, SingleInstance.DefaultMutexName + suffix, out var created, hostile);
+        Assert.True(created);
 
-        var full = new MutexSecurity();
-        full.AddAccessRule(new MutexAccessRule(user, MutexRights.FullControl, AccessControlType.Allow));
-        Assert.Throws<UnauthorizedAccessException>(() => MutexAcl.Create(false, name, out _, full).Dispose());
+        var instance = OnOtherThread(() => SingleInstance.TryAcquire(null, TimeSpan.Zero, suffix));
+
+        Assert.Null(instance);
+        Assert.False(SingleInstance.SignalExistingInstance(suffix));
     }
 
     private static Process StartSleeper(int seconds)

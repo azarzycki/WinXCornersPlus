@@ -17,7 +17,7 @@ public class SecurityPostureTests
     /// <summary>Every combination of the inputs Evaluate looks at.</summary>
     private static IEnumerable<(ApplicationSettings Settings, SecurityContext Context)> AllCombinations()
     {
-        foreach (var elevated in new[] { false, true })
+        foreach (var (elevated, everythingElevated) in new[] { (false, false), (true, false), (true, true) })
         foreach (var install in Installs)
         foreach (var startup in new[] { false, true })
         foreach (var admin in new[] { false, true })
@@ -31,7 +31,7 @@ public class SecurityPostureTests
             settings.AlwaysHideTrayIcon = hideTray;
             settings.CustomCommands[0].Command = "notepad.exe";
             settings.CustomCommands[2] = new CustomCommandSettings { Command = "cmd.exe", Parameters = "/c x", LaunchHidden = hiddenCommand };
-            yield return (settings, new SecurityContext(elevated, install, startup, SettingsPath));
+            yield return (settings, new SecurityContext(elevated, install, startup, SettingsPath, everythingElevated));
         }
     }
 
@@ -45,6 +45,7 @@ public class SecurityPostureTests
             var expected = new Dictionary<string, bool>
             {
                 [Ids.RunningElevated] = context.IsElevated,
+                [Ids.LaunchesWithAdministratorRights] = context.Elevation == ElevationMode.ElevatedWithoutStandardRights,
                 [Ids.ElevatedFromUserWritableFolder] = context.IsElevated && notProtected,
                 [Ids.AlwaysRunAsAdministrator] = settings.AlwaysRunAsAdministrator,
                 [Ids.CustomCommandsEnabled] = settings.EnableCustomCommands,
@@ -276,6 +277,67 @@ public class SecurityPostureTests
         Assert.Null(SecurityPosture.ForSetting(name, new(), Context()));
     }
 
+    /// <summary>
+    /// Review V2 D4: "programs it opens never get administrator rights" must not be claimed where it is false. With no
+    /// normal-rights context on the account, every text that talks about launches says plainly that they get them.
+    /// </summary>
+    [Fact]
+    public void Without_a_standard_rights_context_no_text_claims_launches_lack_administrator_rights()
+    {
+        var settings = ApplicationSettings.CreateDefault();
+        settings.AlwaysRunAsAdministrator = true;
+        settings.EnableCustomCommands = true;
+        var context = new SecurityContext(true, TestData.ProtectedInstall, false, SettingsPath, EverythingRunsElevated: true);
+        Assert.Equal(ElevationMode.ElevatedWithoutStandardRights, context.Elevation);
+
+        var evaluated = SecurityPosture.Evaluate(settings, context);
+        var described = SecurityPosture.DescribeElevation(settings, context.Install, everyStart: true, context.Elevation);
+        var forSetting = SecurityPosture.ForSetting(nameof(ApplicationSettings.AlwaysRunAsAdministrator), settings, context)!;
+        var facts = SecurityPosture.Facts(context);
+        var allText = evaluated.Concat(described).Append(forSetting).Select(static i => i.Title + " " + i.Detail).Concat(facts).ToList();
+
+        Assert.DoesNotContain(allText, t => t.Contains("start without administrator rights", StringComparison.Ordinal) ||
+                                           t.Contains("started without administrator rights", StringComparison.Ordinal) ||
+                                           t.Contains("do not get admin rights", StringComparison.Ordinal));
+        var warning = Find(evaluated, Ids.LaunchesWithAdministratorRights);
+        Assert.Equal(RiskSeverity.Warning, warning.Severity);
+        Assert.Contains("User Account Control is off", warning.Detail, StringComparison.Ordinal);
+        Assert.Contains("built-in Administrator account", warning.Detail, StringComparison.Ordinal);
+        Assert.Equal(warning, Find(described, Ids.LaunchesWithAdministratorRights));
+        Assert.DoesNotContain(described, static i => i.Id == Ids.ElevationLaunchesWithoutAdmin);
+        Assert.Contains("get administrator rights too", Find(evaluated, Ids.RunningElevated).Detail, StringComparison.Ordinal);
+        Assert.Contains("get administrator rights too", forSetting.Detail, StringComparison.Ordinal);
+        Assert.Contains(facts, static f => f.Contains("get administrator rights too", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void With_a_standard_shell_the_text_says_launches_fail_rather_than_get_administrator_rights()
+    {
+        var settings = ApplicationSettings.CreateDefault();
+        settings.AlwaysRunAsAdministrator = true;
+        var context = new SecurityContext(true, TestData.ProtectedInstall, false, SettingsPath);
+        Assert.Equal(ElevationMode.ElevatedWithStandardShell, context.Elevation);
+
+        Assert.Contains("or not at all", Find(SecurityPosture.Evaluate(settings, context), Ids.RunningElevated).Detail, StringComparison.Ordinal);
+        Assert.Contains("or not at all", Find(SecurityPosture.Evaluate(settings, context), Ids.AlwaysRunAsAdministrator).Detail, StringComparison.Ordinal);
+        Assert.Contains("not opened at all",
+            Find(SecurityPosture.DescribeElevation(settings, context.Install, everyStart: false), Ids.ElevationLaunchesWithoutAdmin).Detail,
+            StringComparison.Ordinal);
+        Assert.Contains(SecurityPosture.Facts(context), static f => f.Contains("or not at all", StringComparison.Ordinal));
+        Assert.DoesNotContain(SecurityPosture.Evaluate(settings, context), static i => i.Id == Ids.LaunchesWithAdministratorRights);
+    }
+
+    [Fact]
+    public void A_normal_rights_session_describes_the_switch_for_the_session_it_would_start()
+    {
+        // Before the UAC prompt the session is not elevated; the text is about the elevated session to come, which has
+        // a normal-rights shell (UAC is on, or there would be no prompt).
+        var context = Context();
+        var item = SecurityPosture.ForSetting(nameof(ApplicationSettings.AlwaysRunAsAdministrator), new ApplicationSettings(), context)!;
+
+        Assert.Contains("or not at all", item.Detail, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void AllText_IsWithinLimitsHasNoExclamationMarksAndUsesUniqueKebabCaseIds()
     {
@@ -285,7 +347,7 @@ public class SecurityPostureTests
             var evaluated = SecurityPosture.Evaluate(settings, context);
             Assert.Equal(evaluated.Count, evaluated.Select(static i => i.Id).Distinct().Count());
             items.AddRange(evaluated);
-            items.AddRange(SecurityPosture.DescribeElevation(settings, context.Install, everyStart: true));
+            items.AddRange(SecurityPosture.DescribeElevation(settings, context.Install, everyStart: true, context.Elevation.AfterElevation()));
             items.AddRange(new[] { "AlwaysRunAsAdministrator", "EnableCustomCommands", "AlwaysHideTrayIcon", "LaunchHidden" }
                 .Select(name => SecurityPosture.ForSetting(name, settings, context)!));
             Assert.All(SecurityPosture.Facts(context), fact => Assert.DoesNotContain('!', fact));

@@ -597,7 +597,7 @@ internal sealed class AdvancedForm : Form
     {
         _chkAlwaysRunAsAdministrator.CheckedChanged += (_, _) => ConfirmRiskySwitch(_chkAlwaysRunAsAdministrator,
             "Before WinXCornersPlus runs as administrator",
-            edited => SecurityPosture.DescribeElevation(edited, _host.GetSecurityContext().Install, everyStart: true));
+            edited => DescribeElevation(edited));
         _chkCustom.CheckedChanged += (_, _) => ConfirmRiskySwitch(_chkCustom,
             "Before you turn on custom commands",
             edited => Single(nameof(ApplicationSettings.EnableCustomCommands), edited));
@@ -607,6 +607,13 @@ internal sealed class AdvancedForm : Form
         _chkLaunchHidden.CheckedChanged += (_, _) => ConfirmRiskySwitch(_chkLaunchHidden,
             "Before this command runs without a window",
             edited => Single(SecurityPosture.LaunchHiddenSetting, edited));
+    }
+
+    /// <summary>The consent text for "Always run as administrator", for the session that switch would start.</summary>
+    private IReadOnlyList<RiskItem> DescribeElevation(ApplicationSettings edited)
+    {
+        var context = _host.GetSecurityContext();
+        return SecurityPosture.DescribeElevation(edited, context.Install, everyStart: true, context.Elevation.AfterElevation());
     }
 
     private IReadOnlyList<RiskItem> Single(string settingName, ApplicationSettings edited)

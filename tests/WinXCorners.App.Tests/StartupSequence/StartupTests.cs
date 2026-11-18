@@ -125,6 +125,7 @@ public sealed class StartupTests : IDisposable
                 return SingleInstance.TryAcquire(null, TimeSpan.Zero, suffix);
             },
             () => signalled = true,
+            _ => Assert.Fail("No error may be shown to the first instance."),
             out var instance);
 
         Assert.Equal(StartupOutcome.Continue, outcome);
@@ -136,19 +137,62 @@ public sealed class StartupTests : IDisposable
     }
 
     [Fact]
-    public void Another_instance_is_signalled_and_this_one_exits()
+    public void Another_instance_is_signalled_and_this_one_exits_quietly()
     {
         var signals = 0;
+        var errors = new List<string>();
 
         var outcome = WinXCorners.App.Startup.AcquireSingleInstance(null, (_, _) => null, () =>
         {
             signals++;
-            return false; // Even when the signal cannot be delivered, this copy exits.
-        }, out var instance);
+            return true;
+        }, errors.Add, out var instance);
 
         Assert.Equal(StartupOutcome.ExitAnotherInstance, outcome);
         Assert.Null(instance);
         Assert.Equal(1, signals);
+        Assert.Empty(errors);
+    }
+
+    /// <summary>Review V2 D6: a running copy that cannot be signalled used to make the second launch exit silently.</summary>
+    [Fact]
+    public void A_running_copy_that_does_not_answer_is_reported_and_this_one_exits()
+    {
+        var errors = new List<string>();
+
+        var outcome = WinXCorners.App.Startup.AcquireSingleInstance(null, (_, _) => null, () => false, errors.Add, out var instance);
+
+        Assert.Equal(StartupOutcome.ExitAnotherInstance, outcome);
+        Assert.Null(instance);
+        var error = Assert.Single(errors);
+        Assert.StartsWith("WinXCornersPlus appears to be running but did not respond.", error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Review V2 D6 end to end: another program holds the single-instance mutex (squatting the name) and no running
+    /// copy listens on the activation event. The second launch must say so rather than vanish.
+    /// </summary>
+    [Fact]
+    public void A_squatted_mutex_with_nobody_listening_is_reported()
+    {
+        var suffix = ".Test." + Guid.NewGuid().ToString("N");
+        using var squatter = new Mutex(initiallyOwned: true, SingleInstance.DefaultMutexName + suffix, out var created);
+        Assert.True(created);
+        var errors = new List<string>();
+        StartupOutcome outcome = default;
+
+        var thread = new Thread(() => outcome = WinXCorners.App.Startup.AcquireSingleInstance(
+            null,
+            (pid, t) => SingleInstance.TryAcquire(pid, t, suffix),
+            () => SingleInstance.SignalExistingInstance(suffix),
+            errors.Add,
+            out _));
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(20)));
+        squatter.ReleaseMutex();
+
+        Assert.Equal(StartupOutcome.ExitAnotherInstance, outcome);
+        Assert.Equal([WinXCorners.App.Startup.NotRespondingText], errors);
     }
 
     [Fact]
@@ -165,6 +209,7 @@ public sealed class StartupTests : IDisposable
             null,
             (pid, t) => SingleInstance.TryAcquire(pid, t, suffix),
             () => SingleInstance.SignalExistingInstance(suffix),
+            _ => Assert.Fail("The running copy answered; no error may be shown."),
             out _));
         thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(20)));
@@ -334,6 +379,8 @@ public sealed class StartupTests : IDisposable
         Assert.Throws<ArgumentNullException>(() => WinXCorners.App.Startup.AutoElevate(host, null!));
         Assert.Throws<ArgumentNullException>(() => WinXCorners.App.Startup.PassElevatedGate(host, null!, () => { }));
         Assert.Throws<ArgumentNullException>(() => WinXCorners.App.Startup.PassElevatedGate(host, prompts, null!));
-        Assert.Throws<ArgumentNullException>(() => WinXCorners.App.Startup.AcquireSingleInstance(null, null!, () => true, out _));
+        Assert.Throws<ArgumentNullException>(() => WinXCorners.App.Startup.AcquireSingleInstance(null, null!, () => true, _ => { }, out _));
+        Assert.Throws<ArgumentNullException>(() => WinXCorners.App.Startup.AcquireSingleInstance(null, (_, _) => null, null!, _ => { }, out _));
+        Assert.Throws<ArgumentNullException>(() => WinXCorners.App.Startup.AcquireSingleInstance(null, (_, _) => null, () => true, null!, out _));
     }
 }

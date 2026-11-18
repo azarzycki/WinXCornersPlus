@@ -12,8 +12,9 @@ public sealed record CommandSnapshot(string Name, string Command, string Paramet
 /// <summary>
 /// Everything that decides what an elevated instance will do: which action each corner runs, whether custom
 /// commands are on, what each of the <see cref="ApplicationSettings.CustomCommandCount"/> slots runs, the
-/// modifier key, and whether the tray icon is hidden (an elevated session must never become invisible without
-/// approval). Cosmetic settings and delays are deliberately excluded so that changing them never asks for
+/// modifier key, whether the tray icon is hidden (an elevated session must never become invisible without
+/// approval), and whether every start asks to run as administrator (so that a normal-rights program cannot switch
+/// that on and have the next start raise a UAC prompt without any explanation; review V2 D3). Cosmetic settings and delays are deliberately excluded so that changing them never asks for
 /// re-approval. Equality is by value (ordinal for strings), including the command list.
 /// </summary>
 /// <param name="TopLeftActionId">Unknown ids are captured as "none" because they never run anything.</param>
@@ -26,6 +27,7 @@ public sealed record SecuritySnapshot(
     bool EnableCustomCommands,
     HotCornerModifierKey HotCornerModifierKey,
     bool AlwaysHideTrayIcon,
+    bool AlwaysRunAsAdministrator,
     IReadOnlyList<CommandSnapshot> Commands)
 {
     public bool Equals(SecuritySnapshot? other)
@@ -38,6 +40,7 @@ public sealed record SecuritySnapshot(
                EnableCustomCommands == other.EnableCustomCommands &&
                HotCornerModifierKey == other.HotCornerModifierKey &&
                AlwaysHideTrayIcon == other.AlwaysHideTrayIcon &&
+               AlwaysRunAsAdministrator == other.AlwaysRunAsAdministrator &&
                Commands.SequenceEqual(other.Commands);
     }
 
@@ -51,6 +54,7 @@ public sealed record SecuritySnapshot(
         hash.Add(EnableCustomCommands);
         hash.Add(HotCornerModifierKey);
         hash.Add(AlwaysHideTrayIcon);
+        hash.Add(AlwaysRunAsAdministrator);
         foreach (var command in Commands)
         {
             hash.Add(command);
@@ -98,9 +102,11 @@ public static class SettingsSeal
 {
     /// <summary>
     /// Version 2 added the tray-icon switch and an encoding that keeps every string exact (version 1 silently
-    /// turned unpaired surrogates into U+FFFD). Approvals of any other version are <see cref="SealStatus.Unreadable"/>.
+    /// turned unpaired surrogates into U+FFFD). Version 3 added "Always run as administrator", so an approval of an
+    /// older version says nothing about that switch. Approvals of any other version are
+    /// <see cref="SealStatus.Unreadable"/>, which means asking again.
     /// </summary>
-    public const int FormatVersion = 2;
+    public const int FormatVersion = 3;
 
     private const string FormatName = "WinXCornersPlus.SettingsApproval";
 
@@ -136,6 +142,7 @@ public static class SettingsSeal
             settings.EnableCustomCommands,
             settings.HotCornerModifierKey,
             settings.AlwaysHideTrayIcon,
+            settings.AlwaysRunAsAdministrator,
             commands);
     }
 
@@ -181,6 +188,7 @@ public static class SettingsSeal
         lines.Add($"Custom commands: {OnOff(snapshot.EnableCustomCommands)}");
         lines.Add($"Modifier key: {ModifierName(snapshot.HotCornerModifierKey)}");
         lines.Add($"Tray icon: {Visibility(snapshot.AlwaysHideTrayIcon)}");
+        lines.Add($"Always run as administrator: {OnOff(snapshot.AlwaysRunAsAdministrator)}");
         for (var i = 0; i < snapshot.Commands.Count; i++)
         {
             var command = snapshot.Commands[i];
@@ -220,6 +228,11 @@ public static class SettingsSeal
         if (was.AlwaysHideTrayIcon != now.AlwaysHideTrayIcon)
         {
             lines.Add($"Tray icon: {Visibility(was.AlwaysHideTrayIcon)} -> {Visibility(now.AlwaysHideTrayIcon)}");
+        }
+
+        if (was.AlwaysRunAsAdministrator != now.AlwaysRunAsAdministrator)
+        {
+            lines.Add($"Always run as administrator: {OnOff(was.AlwaysRunAsAdministrator)} -> {OnOff(now.AlwaysRunAsAdministrator)}");
         }
 
         for (var i = 0; i < ApplicationSettings.CustomCommandCount; i++)
@@ -302,6 +315,7 @@ public static class SettingsSeal
         AppendRaw(builder, "customCommands", Bool(snapshot.EnableCustomCommands)).Append(',');
         AppendRaw(builder, "modifier", ((int)snapshot.HotCornerModifierKey).ToString(CultureInfo.InvariantCulture)).Append(',');
         AppendRaw(builder, "hideTrayIcon", Bool(snapshot.AlwaysHideTrayIcon)).Append(',');
+        AppendRaw(builder, "alwaysAdmin", Bool(snapshot.AlwaysRunAsAdministrator)).Append(',');
         builder.Append("\"commands\":[");
         for (var i = 0; i < snapshot.Commands.Count; i++)
         {
@@ -375,6 +389,7 @@ public static class SettingsSeal
                 !TryBool(root, "customCommands", out var customCommands) ||
                 !TryInt(root, "modifier", out var modifier) ||
                 !TryBool(root, "hideTrayIcon", out var hideTrayIcon) ||
+                !TryBool(root, "alwaysAdmin", out var alwaysAdmin) ||
                 !root.TryGetProperty("commands", out var commandsElement) ||
                 commandsElement.ValueKind != JsonValueKind.Array ||
                 commandsElement.GetArrayLength() != ApplicationSettings.CustomCommandCount)
@@ -398,7 +413,7 @@ public static class SettingsSeal
             }
 
             snapshot = new SecuritySnapshot(topLeft, topRight, bottomLeft, bottomRight, customCommands,
-                (HotCornerModifierKey)modifier, hideTrayIcon, commands);
+                (HotCornerModifierKey)modifier, hideTrayIcon, alwaysAdmin, commands);
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {

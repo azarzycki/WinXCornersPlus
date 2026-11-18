@@ -121,4 +121,28 @@ public sealed class StartupRegistrationTests : IDisposable
         Assert.Contains(log, line => line.Contains("Run at startup enabled", StringComparison.Ordinal));
         Assert.Contains(log, line => line.Contains("Run at startup disabled", StringComparison.Ordinal));
     }
+
+    /// <summary>
+    /// An unquoted Run value whose path has spaces could start C:\Program.exe instead: it is not "enabled for this
+    /// executable" and is reported as stale (with its own notice) so the user saves it again, quoted.
+    /// </summary>
+    [Fact]
+    public void An_unquoted_entry_with_spaces_is_stale_and_re_enabling_quotes_it()
+    {
+        WriteRaw(_exePath + " --show-settings");
+        var registration = new StartupRegistration(_log, _valueName, _exePath);
+
+        Assert.False(registration.IsEnabled());
+        Assert.Equal(RunEntryState.UnquotedWithSpaces, registration.GetEntryState());
+        Assert.Equal(_exePath, registration.GetStaleEntryPath());
+        var notices = StartupNotices.Build(
+            new WinXCorners.Core.Settings.SettingsLoadResult(new WinXCorners.Core.Model.ApplicationSettings(),
+                WinXCorners.Core.Settings.SettingsLoadStatus.Loaded, [], null, null),
+            static () => "x", registration.GetStaleEntryPath(), registration.GetEntryState());
+        Assert.Contains("not in quotes", Assert.Single(notices), StringComparison.Ordinal);
+
+        Assert.True(registration.TrySetEnabled(true, out var error), error);
+        Assert.Equal(RunEntryState.ThisExecutable, registration.GetEntryState());
+        Assert.True(registration.IsEnabled());
+    }
 }

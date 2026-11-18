@@ -28,6 +28,26 @@ public sealed class NativeContractTests
         Assert.Equal(x64 ? 40 : 28, Marshal.SizeOf<NativeMethods.INPUT>());
         Assert.Equal(x64 ? 48 : 36, Marshal.SizeOf<NativeMethods.APPBARDATA>());
         Assert.Equal(x64 ? 16 : 12, Marshal.SizeOf<NativeMethods.RAWINPUTDEVICE>());
+        Assert.Equal(8, Marshal.SizeOf<NativeMethods.POINT>());
+        Assert.Equal(x64 ? 16 : 8, Marshal.SizeOf<NativeMethods.UNICODE_STRING>());
+        Assert.Equal(x64 ? 48 : 24, Marshal.SizeOf<NativeMethods.OBJECT_ATTRIBUTES>());
+        Assert.Equal(x64 ? 16 : 8, Marshal.SizeOf<NativeMethods.IO_STATUS_BLOCK>());
+        Assert.Equal(52, Marshal.SizeOf<NativeMethods.BY_HANDLE_FILE_INFORMATION>());
+        Assert.Equal(x64 ? 8 : 4, Marshal.OffsetOf<NativeMethods.OBJECT_ATTRIBUTES>(nameof(NativeMethods.OBJECT_ATTRIBUTES.RootDirectory)).ToInt32());
+    }
+
+    /// <summary>Review V2 D2: the app reads the pointer with GetCursorPos and checks the result.</summary>
+    [Fact]
+    public void GetCursorPos_and_the_input_desktop_check_work_on_an_unlocked_desktop()
+    {
+        var position = InputDesktop.TryGetCursorPosition();
+        var ours = Sta.Run(static () => new InputDesktop().IsInputDesktopOurs());
+        _output.WriteLine($"cursor: {position?.ToString() ?? "unavailable"}; input desktop is ours: {ours}; {TestEnvironment.Describe()}");
+        TestEnvironment.RecordFact($"Pointer: GetCursorPos {(position is null ? "failed" : "succeeded")}, input desktop is the test's own: {ours}.");
+
+        // A hosted runner's session is unlocked and interactive, so both facts are available; if either is not, the
+        // two must agree (GetCursorPos fails exactly when another desktop has the input).
+        Assert.Equal(position.HasValue, ours);
     }
 
     [Fact]

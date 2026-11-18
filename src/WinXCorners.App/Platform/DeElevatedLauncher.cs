@@ -15,6 +15,10 @@ namespace WinXCorners.App;
 /// <c>ShellExecute</c> on it. The child is created by explorer, so it gets explorer's token.</para>
 /// <para>There is deliberately no fallback to <c>Process.Start</c>: that would run the child with our elevated
 /// token, which is exactly what this class exists to prevent. Failing closed is the point.</para>
+/// <para>The technique only helps when the shell itself is not elevated (review V2 D4): with User Account Control
+/// off, on the built-in Administrator account, or when someone started explorer.exe as administrator, the shell's
+/// token is elevated too. So the shell process's own token is checked (TokenElevation) before every launch, and an
+/// elevated or unreadable shell token fails the launch.</para>
 /// <para>Call from an STA thread (the UI thread or the action worker). Explorer reports problems with the target
 /// itself (e.g. file not found) in its own dialog; this class can only report failures to reach the shell.</para>
 /// </remarks>
@@ -66,7 +70,7 @@ internal static class DeElevatedLauncher
 
             object location = CsidlDesktop;
             object? emptyRoot = null; // marshals as VT_EMPTY
-            var hr = shellWindows.FindWindowSW(ref location, ref emptyRoot, SwcDesktop, out _, SwfoNeedDispatch, out var desktopDispatch);
+            var hr = shellWindows.FindWindowSW(ref location, ref emptyRoot, SwcDesktop, out var desktopWindow, SwfoNeedDispatch, out var desktopDispatch);
             if (desktopDispatch is not null)
             {
                 comObjects.Add(desktopDispatch);
@@ -76,6 +80,14 @@ internal static class DeElevatedLauncher
             {
                 error = "The desktop shell (explorer.exe) is not running or has not registered the desktop " +
                         $"(0x{hr:X8}), so the program cannot be started without administrator rights.";
+                return false;
+            }
+
+            // The process that registered the desktop view is the one that will perform the ShellExecute.
+            var shellCheck = CheckShellToken(new IntPtr(desktopWindow));
+            if (shellCheck is not null)
+            {
+                error = shellCheck;
                 return false;
             }
 
@@ -174,6 +186,28 @@ internal static class DeElevatedLauncher
         {
             ReleaseAll(comObjects);
         }
+    }
+
+    /// <summary>
+    /// Null when the desktop shell that owns <paramref name="desktopWindow"/> (or, when that is zero, the shell window)
+    /// runs without administrator rights; otherwise why launching through it would not drop them.
+    /// </summary>
+    internal static string? CheckShellToken(IntPtr desktopWindow)
+    {
+        var window = desktopWindow != IntPtr.Zero ? desktopWindow : NativeMethods.GetShellWindow();
+        if (window == IntPtr.Zero)
+        {
+            return "The desktop shell has no window, so its rights cannot be checked; nothing was started.";
+        }
+
+        NativeMethods.GetWindowThreadProcessId(window, out var processId);
+        return ProcessElevation.IsProcessElevated((int)processId) switch
+        {
+            false => null,
+            true => "The desktop shell (explorer.exe) itself runs as administrator, so a program started through it " +
+                    "would get administrator rights too; nothing was started.",
+            null => "The desktop shell's rights could not be checked, so nothing was started."
+        };
     }
 
     private static void ReleaseAll(List<object> comObjects)

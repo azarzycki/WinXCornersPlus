@@ -1,5 +1,8 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+using WinXCorners.Core.Security;
 
 namespace WinXCorners.App;
 
@@ -10,6 +13,53 @@ internal static class ProcessElevation
     private const int ErrorCancelled = 1223;
 
     internal static bool IsElevated => Environment.IsPrivilegedProcess;
+
+    /// <summary>This process's elevation in Core's three states (review V2 D4), from its own token.</summary>
+    internal static ElevationMode CurrentMode => ElevationModes.Classify(IsElevated, CurrentTokenType());
+
+    /// <summary>This process's TOKEN_ELEVATION_TYPE, or Unknown when it cannot be read.</summary>
+    internal static TokenElevationType CurrentTokenType()
+    {
+        using var process = Process.GetCurrentProcess();
+        return TryReadToken(process.SafeHandle, NativeMethods.TokenElevationTypeClass, out var value)
+            ? (TokenElevationType)value
+            : TokenElevationType.Unknown;
+    }
+
+    /// <summary>
+    /// Whether the process <paramref name="processId"/> runs with an elevated token (TokenElevation). Null when it
+    /// cannot be determined (the process is gone, or its token cannot be opened): callers treat that as "maybe".
+    /// </summary>
+    internal static bool? IsProcessElevated(int processId)
+    {
+        if (processId <= 0)
+        {
+            return null;
+        }
+
+        using var process = NativeMethods.OpenProcess(NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION, false, (uint)processId);
+        if (process.IsInvalid)
+        {
+            return null;
+        }
+
+        return TryReadToken(process, NativeMethods.TokenElevationClass, out var elevated) ? elevated != 0 : null;
+    }
+
+    private static bool TryReadToken(SafeProcessHandle process, int informationClass, out int value)
+    {
+        value = 0;
+        if (!NativeMethods.OpenProcessToken(process, NativeMethods.TOKEN_QUERY, out var token))
+        {
+            token.Dispose();
+            return false;
+        }
+
+        using (token)
+        {
+            return NativeMethods.GetTokenInformation(token, informationClass, out value, Marshal.SizeOf<int>(), out _);
+        }
+    }
 
     /// <summary>
     /// Starts this executable again with the <c>runas</c> verb. Returns false with a message when the user declines

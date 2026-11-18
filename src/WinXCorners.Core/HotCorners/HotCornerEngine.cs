@@ -12,13 +12,19 @@ namespace WinXCorners.Core.HotCorners;
 /// <param name="AnyMouseButtonDown">A mouse button is held, i.e. the user is dragging.</param>
 /// <param name="ModifierSatisfied">No modifier is required, or the required one is down.</param>
 /// <param name="Suppressed">The flyout or its corner picker menu is open.</param>
+/// <param name="PointerAvailable">
+/// False when the app cannot see the pointer on its own desktop: reading the position failed, the session is locked
+/// or disconnected, or another desktop (the lock screen, a UAC prompt, Ctrl+Alt+Del) has the input. The other fields
+/// are then meaningless (review V2 D2: a failed read used to look like the top-left pixel).
+/// </param>
 public readonly record struct HotCornerInput(
     Point Cursor,
     Rectangle ScreenBounds,
     long TimestampMs,
     bool AnyMouseButtonDown,
     bool ModifierSatisfied,
-    bool Suppressed);
+    bool Suppressed,
+    bool PointerAvailable = true);
 
 public enum HotCornerOutcome
 {
@@ -95,6 +101,15 @@ public sealed class HotCornerEngine
     public HotCornerDecision Evaluate(ApplicationSettings settings, in HotCornerInput input)
     {
         ArgumentNullException.ThrowIfNull(settings);
+
+        if (!input.PointerAvailable)
+        {
+            // Locked, disconnected, another desktop has the input, or the position could not be read. Nothing may
+            // fire, and when the pointer comes back it has to be seen outside every corner first: a pointer that
+            // reappears in a corner after an unlock was not moved there by the user on this desktop.
+            Reset();
+            return HotCornerDecision.Idle;
+        }
 
         var area = HotCornerGeometry.GetArea(input.Cursor, input.ScreenBounds);
         if (area == HotCornerArea.None)

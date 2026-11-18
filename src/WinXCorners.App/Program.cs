@@ -18,19 +18,29 @@ internal static class Program
         //    (ApplicationConfiguration.Initialize also passes the project's default mode to SetHighDpiMode; the
         //    manifest wins over that too.)
         var options = CommandLineOptions.Parse(args);
+
+        // 0. Elevated only (review V2 D1): Redirection Guard before anything touches the file system, so junctions that
+        //    programs without administrator rights planted in the user's profile are not followed by this process.
+        var isElevated = ProcessElevation.IsElevated;
+        var mitigationNote = isElevated ? ProcessMitigations.EnableRedirectionGuard() : null;
+
         ApplicationConfiguration.Initialize();
 
         // 2. Global exception handling (review M3), before any window exists. A UI-thread exception is logged and
-        //    reported once; the tray app carries on.
-        var crashes = new CrashReporter(CrashReporter.DefaultCrashLogPath());
+        //    reported once; the tray app carries on. An elevated process writes no crash.log (review V2 D1): it would
+        //    live under %LOCALAPPDATA%, where programs without administrator rights could point it at any file, and an
+        //    admin-only location would mean creating and securing a folder elevated. The in-app log has the summary.
+        var crashes = new CrashReporter(isElevated ? null : CrashReporter.DefaultCrashLogPath());
         crashes.Install();
 
         // 3. Single instance (review S4/B7). Done before loading settings or elevating, so a second launch only
-        //    asks the running copy to show Settings - it never raises a UAC prompt or a dialog of its own.
+        //    asks the running copy to show Settings - it never raises a UAC prompt or a dialog of its own (only a
+        //    plain message when the running copy does not answer, review V2 D6).
         var outcome = Startup.AcquireSingleInstance(
             options.RestartedFromProcessId,
             (processId, timeout) => SingleInstance.TryAcquire(processId, timeout),
             SignalRunningInstance,
+            text => MessageBox.Show(text, Startup.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning),
             out var instance);
         if (outcome != StartupOutcome.Continue || instance is null)
         {
@@ -44,6 +54,15 @@ internal static class Program
             // 4. Composition root: loads settings (sanitized, migrated, never discarded) and the platform services.
             host = AppHost.Create(options);
             crashes.AttachLog(host.Log);
+            if (mitigationNote is not null)
+            {
+                host.Log.Add(mitigationNote);
+            }
+
+            if (crashes.CrashLogPath is null)
+            {
+                host.Log.Add("Running as administrator: unexpected errors are kept in this log only, not written to crash.log.");
+            }
 
             // 5. "Always run as administrator" (review S1). The only place a start raises a UAC prompt. A declined
             //    prompt continues with normal rights. The new elevated copy waits for this one to exit before it
@@ -106,9 +125,14 @@ internal static class Program
     /// <summary>Asks the running copy to open its Settings window, and lets it come to the front.</summary>
     private static bool SignalRunningInstance()
     {
-        // This process was started by the user, so it may hand its right to take the foreground to the running
-        // copy; without that, Windows would only flash the Settings window's taskbar button.
-        _ = NativeMethods.AllowSetForegroundWindow(NativeMethods.ASFW_ANY);
+        // This process was started by the user, so it may hand its right to take the foreground to the running copy;
+        // without that, Windows would only flash the Settings window's taskbar button. The right goes only to
+        // processes of this executable's name in this session (review V2: ASFW_ANY handed it to every process).
+        foreach (var processId in SingleInstance.FindRunningCopies())
+        {
+            _ = NativeMethods.AllowSetForegroundWindow(processId);
+        }
+
         return SingleInstance.SignalExistingInstance();
     }
 }

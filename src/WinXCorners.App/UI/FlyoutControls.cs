@@ -32,6 +32,13 @@ internal static class RoundedRectangleGeometry
 /// <summary>A flyout corner button: shows the action assigned to a corner and opens the picker when clicked.</summary>
 internal sealed class FlyoutActionControl : Control
 {
+    /// <summary>
+    /// How the button text is drawn. NoPrefix: the text can be a custom command's name from settings.json, and an "&amp;"
+    /// in it is part of the name, not a mnemonic marker (review V2 D7).
+    /// </summary>
+    internal const TextFormatFlags ButtonTextFlags =
+        TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
+
     private bool _hovered;
     private bool _pressed;
 
@@ -117,7 +124,7 @@ internal sealed class FlyoutActionControl : Control
             Font,
             textRect,
             ForeColor,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            ButtonTextFlags);
 
         var arrowOffset = (int)Math.Round(17 * scale);
         var arrowHalf = (int)Math.Round(5 * scale);
@@ -206,6 +213,6 @@ internal sealed class AccentTileControl : Control
             Font,
             Rectangle.Ceiling(rect),
             ForeColor,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
     }
 }

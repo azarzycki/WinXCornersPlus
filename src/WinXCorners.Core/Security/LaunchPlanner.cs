@@ -6,13 +6,19 @@ namespace WinXCorners.Core.Security;
 /// <summary>With which token a planned launch starts.</summary>
 public enum LaunchIntegrity
 {
-    /// <summary>Same rights as the app, which is only ever the case when the app itself is not elevated.</summary>
+    /// <summary>Same rights as the app, which is not elevated.</summary>
     SameAsApp,
     /// <summary>
-    /// Started with the desktop shell's (non-elevated) token. If that fails the launch fails: there is no elevated
-    /// fallback (fail closed).
+    /// Started with the desktop shell's (non-elevated) token. If that fails, or the shell itself turns out to run as
+    /// administrator, the launch fails: there is no elevated fallback (fail closed).
     /// </summary>
-    DeElevated
+    DeElevated,
+    /// <summary>
+    /// Started directly with the app's elevated token. Only for <see cref="ElevationMode.ElevatedWithoutStandardRights"/>,
+    /// where everything on the desktop (the shell included) already runs as administrator, so no other way exists and
+    /// this way gives nothing away; the user is told so by <see cref="SecurityPosture"/>.
+    /// </summary>
+    Administrator
 }
 
 public enum LaunchTargetKind
@@ -31,9 +37,10 @@ public sealed record LaunchRequest(string Target, string Arguments, bool Hidden,
 public sealed record LaunchPlan(string FileName, string Arguments, string WorkingDirectory, bool Hidden, LaunchIntegrity Integrity);
 
 /// <summary>
-/// Turns a launch request into a plan (review items S1-S3). Every launch from an elevated app is de-elevated; there
-/// is deliberately no way to ask for an elevated launch, because a program that needs admin raises its own UAC
-/// prompt. The working directory is never the app folder, so ShellExecute's current-directory search cannot pick
+/// Turns a launch request into a plan (review items S1-S3, V2 D4). Every launch from an elevated app that has a
+/// normal-rights shell is de-elevated; there is deliberately no way to ask for an elevated launch, because a program
+/// that needs admin raises its own UAC prompt. Only where no normal-rights context exists at all
+/// (<see cref="ElevationMode.ElevatedWithoutStandardRights"/>) is a program started with the app's own token. The working directory is never the app folder, so ShellExecute's current-directory search cannot pick
 /// up a planted file there.
 /// </summary>
 public static class LaunchPlanner
@@ -41,7 +48,7 @@ public static class LaunchPlanner
     /// <summary>Shell URI schemes a <see cref="LaunchTargetKind.BuiltIn"/> target may use instead of an absolute path.</summary>
     public static IReadOnlyList<string> BuiltInUriSchemes { get; } = ["ms-settings:"];
 
-    public static bool TryPlan(LaunchRequest request, bool appIsElevated, SystemDirectories directories,
+    public static bool TryPlan(LaunchRequest request, ElevationMode elevation, SystemDirectories directories,
         [NotNullWhen(true)] out LaunchPlan? plan, [NotNullWhen(false)] out string? error)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -73,7 +80,13 @@ public static class LaunchPlanner
             Arguments: arguments,
             WorkingDirectory: WindowsPath.Normalize(workingDirectory),
             Hidden: request.Hidden && request.Kind == LaunchTargetKind.CustomCommand,
-            Integrity: appIsElevated ? LaunchIntegrity.DeElevated : LaunchIntegrity.SameAsApp);
+            Integrity: elevation switch
+            {
+                ElevationMode.NotElevated => LaunchIntegrity.SameAsApp,
+                ElevationMode.ElevatedWithoutStandardRights => LaunchIntegrity.Administrator,
+                // ElevatedWithStandardShell, and any value this version does not know: the fail-closed path.
+                _ => LaunchIntegrity.DeElevated
+            });
         return true;
     }
 
@@ -91,6 +104,10 @@ public static class LaunchPlanner
         if (plan.Integrity == LaunchIntegrity.DeElevated)
         {
             flags.Add("without administrator rights");
+        }
+        else if (plan.Integrity == LaunchIntegrity.Administrator)
+        {
+            flags.Add("with administrator rights: this account has no other kind");
         }
 
         if (plan.Hidden)

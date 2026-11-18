@@ -12,14 +12,15 @@ namespace WinXCorners.App;
 /// <remarks>
 /// <para>Threading: <see cref="TryAcquire"/>, <see cref="Release"/> and <see cref="Dispose"/> must all be called on
 /// the main (UI) thread. A mutex is owned by the thread that acquired it and only that thread can release it.</para>
-/// <para>Why explicit ACLs (review B7/S4): an elevated process creates kernel objects with a default DACL that
-/// grants only Administrators and SYSTEM, so a normal-rights copy of the same user got
-/// UnauthorizedAccessException instead of noticing the running instance. Both objects are therefore created with
-/// a DACL that grants the current user's SID access, which an elevated and a normal process of that user share.
-/// No other account is granted anything. The user gets full control rather than only synchronize+modify because
-/// MutexAcl.Create / EventWaitHandleAcl.Create open an already existing object asking for all access; a narrower
-/// grant would make the second instance fail to open it. The user already has full control over objects created
-/// with a normal-rights default DACL, so this grants nothing new.</para>
+/// <para>Why explicit ACLs (review B7/S4, V2 D6): an elevated process creates kernel objects with a default DACL
+/// that grants only Administrators and SYSTEM, so a normal-rights copy of the same user got
+/// UnauthorizedAccessException instead of noticing the running instance. Both objects are therefore created with a
+/// DACL that grants the current user's SID exactly what a second launch needs (SYNCHRONIZE to wait, MODIFY_STATE to
+/// release the mutex or set the event), an OWNER RIGHTS entry with the same rights so that whoever owns the object
+/// cannot rewrite its DACL either (without it the owner implicitly has WRITE_DAC), and full control for SYSTEM and
+/// Administrators. Nobody running with normal rights can lock the objects (WRITE_DAC, WRITE_OWNER) any more.</para>
+/// <para>An existing object is opened first, asking for only those rights; only when none exists is one created.
+/// MutexAcl.Create on its own would open an existing object asking for full access, which the narrow DACL refuses.</para>
 /// </remarks>
 internal sealed class SingleInstance : IDisposable
 {
@@ -169,6 +170,40 @@ internal sealed class SingleInstance : IDisposable
 
     public void Dispose() => Release();
 
+    /// <summary>
+    /// Process ids of other processes in this session whose image has this executable's name (at most a few): the
+    /// candidates for the running copy, which a second launch lets take the foreground. A name is not proof, but the
+    /// right is only to bring a window to the front once, and only for those processes rather than for any process.
+    /// </summary>
+    internal static IReadOnlyList<int> FindRunningCopies()
+    {
+        using var self = Process.GetCurrentProcess();
+        var found = new List<int>();
+        foreach (var process in Process.GetProcessesByName(self.ProcessName))
+        {
+            using (process)
+            {
+                try
+                {
+                    if (process.Id != self.Id && process.SessionId == self.SessionId && found.Count < 4)
+                    {
+                        found.Add(process.Id);
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    // Exited while we looked.
+                }
+                catch (Win32Exception)
+                {
+                    // Its session cannot be read: not a candidate.
+                }
+            }
+        }
+
+        return found;
+    }
+
     private void OnActivationSignalled(object? state, bool timedOut)
     {
         if (!timedOut)
@@ -221,49 +256,93 @@ internal sealed class SingleInstance : IDisposable
         }
     }
 
+    /// <summary>What a second launch needs on the mutex: wait for it and release it.</summary>
+    internal const MutexRights UserMutexRights = MutexRights.Synchronize | MutexRights.Modify;
+
+    /// <summary>What a second launch needs on the activation event: set it (and the owner waits on it).</summary>
+    internal const EventWaitHandleRights UserEventRights = EventWaitHandleRights.Synchronize | EventWaitHandleRights.Modify;
+
+    /// <summary>OWNER RIGHTS (S-1-3-4): replaces the owner's implicit READ_CONTROL and WRITE_DAC.</summary>
+    internal static readonly SecurityIdentifier OwnerRights = new("S-1-3-4");
+
+    /// <summary>Open-then-create attempts, for the race where another launch creates the object in between.</summary>
+    private const int CreateAttempts = 3;
+
     private static Mutex? CreateMutex(string name)
     {
-        try
+        for (var attempt = 0; attempt < CreateAttempts; attempt++)
         {
-            var security = new MutexSecurity();
-            security.AddAccessRule(new MutexAccessRule(CurrentUser(), MutexRights.FullControl, AccessControlType.Allow));
-            return MutexAcl.Create(initiallyOwned: false, name, out _, security);
+            try
+            {
+                if (MutexAcl.TryOpenExisting(name, UserMutexRights, out var existing))
+                {
+                    return existing;
+                }
+
+                var security = new MutexSecurity();
+                security.AddAccessRule(new MutexAccessRule(CurrentUser(), UserMutexRights, AccessControlType.Allow));
+                security.AddAccessRule(new MutexAccessRule(OwnerRights, UserMutexRights, AccessControlType.Allow));
+                security.AddAccessRule(new MutexAccessRule(LocalSystem, MutexRights.FullControl, AccessControlType.Allow));
+                security.AddAccessRule(new MutexAccessRule(Administrators, MutexRights.FullControl, AccessControlType.Allow));
+                return MutexAcl.Create(initiallyOwned: false, name, out _, security);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Either the existing object does not grant us even SYNCHRONIZE + MODIFY_STATE (someone else's, or
+                // squatted with a hostile DACL), or it was created between our open and our create and Create asked
+                // for more than our DACL grants. Try the limited open again; give up after a few rounds.
+            }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                return null; // The name is taken by a different kind of object.
+            }
+            catch (IOException)
+            {
+                return null;
+            }
         }
-        catch (UnauthorizedAccessException)
-        {
-            return null; // Exists but not ours to open: treat as "another instance is running".
-        }
-        catch (WaitHandleCannotBeOpenedException)
-        {
-            return null; // The name is taken by a different kind of object.
-        }
-        catch (IOException)
-        {
-            return null;
-        }
+
+        return null; // Exists but not ours to open: treat as "another instance is running".
     }
 
     private static EventWaitHandle? CreateActivationEvent(string name)
     {
-        try
+        for (var attempt = 0; attempt < CreateAttempts; attempt++)
         {
-            var security = new EventWaitHandleSecurity();
-            security.AddAccessRule(new EventWaitHandleAccessRule(CurrentUser(), EventWaitHandleRights.FullControl, AccessControlType.Allow));
-            return EventWaitHandleAcl.Create(initialState: false, EventResetMode.AutoReset, name, out _, security);
+            try
+            {
+                if (EventWaitHandleAcl.TryOpenExisting(name, UserEventRights, out var existing))
+                {
+                    return existing;
+                }
+
+                var security = new EventWaitHandleSecurity();
+                security.AddAccessRule(new EventWaitHandleAccessRule(CurrentUser(), UserEventRights, AccessControlType.Allow));
+                security.AddAccessRule(new EventWaitHandleAccessRule(OwnerRights, UserEventRights, AccessControlType.Allow));
+                security.AddAccessRule(new EventWaitHandleAccessRule(LocalSystem, EventWaitHandleRights.FullControl, AccessControlType.Allow));
+                security.AddAccessRule(new EventWaitHandleAccessRule(Administrators, EventWaitHandleRights.FullControl, AccessControlType.Allow));
+                return EventWaitHandleAcl.Create(initialState: false, EventResetMode.AutoReset, name, out _, security);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // As for the mutex: a hostile DACL, or a creation race; retry the limited open.
+            }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                return null;
+            }
+            catch (IOException)
+            {
+                return null;
+            }
         }
-        catch (UnauthorizedAccessException)
-        {
-            return null;
-        }
-        catch (WaitHandleCannotBeOpenedException)
-        {
-            return null;
-        }
-        catch (IOException)
-        {
-            return null;
-        }
+
+        return null;
     }
+
+    private static SecurityIdentifier LocalSystem => new(WellKnownSidType.LocalSystemSid, null);
+
+    private static SecurityIdentifier Administrators => new(WellKnownSidType.BuiltinAdministratorsSid, null);
 
     private static SecurityIdentifier CurrentUser()
     {

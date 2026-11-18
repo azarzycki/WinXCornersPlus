@@ -55,7 +55,6 @@ public class SettingsSealTests
         changed.HotCornersEnabled = !changed.HotCornersEnabled;
         changed.StartWithWindows = !changed.StartWithWindows;
         changed.IgnoreFullScreen = !changed.IgnoreFullScreen;
-        changed.AlwaysRunAsAdministrator = !changed.AlwaysRunAsAdministrator;
         changed.FlyoutAnimationDirection = FlyoutAnimationDirection.Left;
         changed.GlobalDelayEnabled = true;
         changed.GlobalDelayIndex = 5;
@@ -75,6 +74,7 @@ public class SettingsSealTests
 
     public static TheoryData<string, Action<ApplicationSettings>, string> SecurityRelevantChanges() => new()
     {
+        { "always-admin", s => s.AlwaysRunAsAdministrator = true, "Always run as administrator: off -> on" },
         { "top-left", s => s.TopLeftActionId = ActionCatalog.CustomId(0), "Top-left corner: File Explorer -> Command 1" },
         { "top-right", s => s.TopRightActionId = ActionIds.TaskManager, "Top-right corner: Command 2 (“Backup”) -> Task Manager" },
         { "bottom-left", s => s.BottomLeftActionId = ActionIds.None, "Bottom-left corner: Show All Windows -> None" },
@@ -170,11 +170,15 @@ public class SettingsSealTests
             "null",
             "42",
             "{}",
-            valid.Replace("\"version\":2", "\"version\":1", StringComparison.Ordinal),
-            valid.Replace("\"version\":2", "\"version\":3", StringComparison.Ordinal),
-            valid.Replace("\"version\":2", "\"version\":\"2\"", StringComparison.Ordinal),
-            valid.Replace("\"version\":2", "\"version\":2.0", StringComparison.Ordinal),
-            valid.Replace("\"version\":2", "\"version\":2.5", StringComparison.Ordinal),
+            valid.Replace("\"version\":3", "\"version\":1", StringComparison.Ordinal),
+            valid.Replace("\"version\":3", "\"version\":2", StringComparison.Ordinal),
+            valid.Replace("\"version\":3", "\"version\":4", StringComparison.Ordinal),
+            valid.Replace("\"version\":3", "\"version\":\"3\"", StringComparison.Ordinal),
+            valid.Replace("\"version\":3", "\"version\":3.0", StringComparison.Ordinal),
+            valid.Replace("\"version\":3", "\"version\":3.5", StringComparison.Ordinal),
+            valid.Replace(",\"alwaysAdmin\":false", string.Empty, StringComparison.Ordinal),
+            // A version-2 approval (no "Always run as administrator" field, review V2 D3) must be approved again.
+            valid.Replace("\"version\":3", "\"version\":2", StringComparison.Ordinal).Replace(",\"alwaysAdmin\":false", string.Empty, StringComparison.Ordinal),
             // Not what the writer produces: whitespace, alternative escapes, reordered or missing fields.
             " " + valid,
             valid.Replace(",", ", ", StringComparison.Ordinal),
@@ -222,7 +226,7 @@ public class SettingsSealTests
         var approval = SettingsSeal.CreateApproval(settings);
         using var document = JsonDocument.Parse(approval);
         var names = document.RootElement.EnumerateObject().Select(static p => p.Name).ToArray();
-        Assert.Equal(["format", "version", "topLeft", "topRight", "bottomLeft", "bottomRight", "customCommands", "modifier", "hideTrayIcon", "commands"], names);
+        Assert.Equal(["format", "version", "topLeft", "topRight", "bottomLeft", "bottomRight", "customCommands", "modifier", "hideTrayIcon", "alwaysAdmin", "commands"], names);
         Assert.Equal(SettingsSeal.FormatVersion, document.RootElement.GetProperty("version").GetInt32());
         var commandFields = document.RootElement.GetProperty("commands")[0].EnumerateObject().Select(static p => p.Name).ToArray();
         Assert.Equal(["name", "command", "parameters", "hidden"], commandFields);
@@ -284,6 +288,7 @@ public class SettingsSealTests
             "Custom commands: on",
             "Modifier key: Ctrl",
             "Tray icon: shown",
+            "Always run as administrator: off",
             "Command 1 runs: program “notepad.exe”",
             "Command 2 (“Backup”) runs: program “robocopy” with arguments “C:\\a D:\\b” (hidden window)"
         ], lines);
@@ -446,7 +451,8 @@ public class SettingsSealTests
             {
                 // Accepted only when the text is exactly what the writer produces for some settings.
                 Assert.All(text, c => Assert.InRange(c, ' ', '~'));
-                Assert.DoesNotContain(", ", text, StringComparison.Ordinal);
+                // ", " can be part of a string value, but never followed by a quote: inside values '"' is \u0022.
+                Assert.DoesNotContain(", \"", text, StringComparison.Ordinal);
             }
             else
             {

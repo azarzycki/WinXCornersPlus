@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
-  Writes test counts, the names (and reasons) of skipped and failed tests, and the coverage of a Cobertura report to
-  the console and to $GITHUB_STEP_SUMMARY. Never gates: the test step itself fails the job on a failed test.
+  Writes test counts, the names (and reasons) of skipped and failed tests, the coverage of a Cobertura report and the
+  runner facts the tests recorded (file named by WXC_TEST_FACTS) to the console and to $GITHUB_STEP_SUMMARY. Never
+  gates: the test step itself fails the job on a failed test.
 .EXAMPLE
   ./build/Write-TestSummary.ps1 -ResultsDirectory TestResults -Title 'App tests (windows-2025)'
 #>
@@ -64,6 +65,15 @@ if ($report) {
     $branch = [double]::Parse($coverage.coverage.'branch-rate', $culture) * 100
     $lines.Add('')
     $lines.Add(("App assembly coverage from these tests (reported, not gated): {0:N1}% of lines, {1:N1}% of branches" -f $line, $branch))
+}
+
+# What the tests found out about the runner (UAC state, shell elevation, Redirection Guard): written by the tests
+# to the file named by WXC_TEST_FACTS, reported here as is.
+$facts = $env:WXC_TEST_FACTS
+if ($facts -and (Test-Path -LiteralPath $facts)) {
+    $lines.Add('')
+    $lines.Add('Runner facts found by the tests:')
+    foreach ($fact in Get-Content -LiteralPath $facts) { $lines.Add("- $fact") }
 }
 
 $lines | ForEach-Object { Write-Host $_ }

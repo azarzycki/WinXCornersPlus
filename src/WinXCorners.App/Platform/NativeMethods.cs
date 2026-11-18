@@ -69,9 +69,6 @@ internal static class NativeMethods
     internal const uint SWP_NOACTIVATE = 0x0010;
     internal const uint SWP_NOOWNERZORDER = 0x0200;
 
-    /// <summary>AllowSetForegroundWindow argument: any process may take the foreground once.</summary>
-    internal const int ASFW_ANY = -1;
-
     [StructLayout(LayoutKind.Sequential)]
     internal struct RAWINPUTDEVICE
     {
@@ -282,6 +279,183 @@ internal static class NativeMethods
     /// <summary>With TPM_RETURNCMD the return value is the chosen command id, or 0 for none.</summary>
     [DllImport("user32.dll")]
     internal static extern int TrackPopupMenuEx(IntPtr hMenu, uint uFlags, int x, int y, IntPtr hWnd, IntPtr lptpm);
+
+    // ---- user32: pointer, desktops, session notifications (review V2 D2) ------------------------
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetCursorPos(out POINT lpPoint);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct POINT
+    {
+        internal int X;
+        internal int Y;
+    }
+
+    internal const uint DESKTOP_READOBJECTS = 0x0001;
+    internal const int UOI_NAME = 2;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr OpenInputDesktop(uint dwFlags, [MarshalAs(UnmanagedType.Bool)] bool fInherit, uint dwDesiredAccess);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool CloseDesktop(IntPtr hDesktop);
+
+    /// <summary>The returned handle belongs to the thread; it must not be closed.</summary>
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetThreadDesktop(uint dwThreadId);
+
+    [DllImport("user32.dll", EntryPoint = "GetUserObjectInformationW", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetUserObjectInformation(IntPtr hObj, int nIndex, [Out] char[]? pvInfo, uint nLength, out uint lpnLengthNeeded);
+
+    internal const int WM_WTSSESSION_CHANGE = 0x02B1;
+    internal const uint NOTIFY_FOR_THIS_SESSION = 0;
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool WTSRegisterSessionNotification(IntPtr hWnd, uint dwFlags);
+
+    [DllImport("wtsapi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool WTSUnRegisterSessionNotification(IntPtr hWnd);
+
+    // ---- kernel32: process, token, mitigation ---------------------------------------------------
+
+    [DllImport("kernel32.dll")]
+    internal static extern uint GetCurrentThreadId();
+
+    internal const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    internal const uint TOKEN_QUERY = 0x0008;
+    internal const int TokenElevationTypeClass = 18;
+    internal const int TokenElevationClass = 20;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern Microsoft.Win32.SafeHandles.SafeProcessHandle OpenProcess(uint dwDesiredAccess, [MarshalAs(UnmanagedType.Bool)] bool bInheritHandle, uint dwProcessId);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool OpenProcessToken(Microsoft.Win32.SafeHandles.SafeProcessHandle processHandle, uint desiredAccess, out Microsoft.Win32.SafeHandles.SafeAccessTokenHandle tokenHandle);
+
+    /// <summary>For TokenElevation and TokenElevationType: both return one 32-bit value.</summary>
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetTokenInformation(Microsoft.Win32.SafeHandles.SafeAccessTokenHandle tokenHandle, int tokenInformationClass, out int tokenInformation, int tokenInformationLength, out int returnLength);
+
+    /// <summary>PROCESS_MITIGATION_POLICY.ProcessRedirectionTrustPolicy (Windows 10 21H2 / Server 2022 and later).</summary>
+    internal const int ProcessRedirectionTrustPolicy = 16;
+
+    /// <summary>PROCESS_MITIGATION_REDIRECTION_TRUST_POLICY.EnforceRedirectionTrust.</summary>
+    internal const uint RedirectionTrustEnforce = 0x1;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetProcessMitigationPolicy(int mitigationPolicy, ref uint buffer, UIntPtr length);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetProcessMitigationPolicy(IntPtr hProcess, int mitigationPolicy, out uint buffer, UIntPtr length);
+
+    // ---- kernel32 / ntdll: verified file access (review V2 D1) ----------------------------------
+
+    internal const uint FILE_READ_DATA = 0x0001;
+    internal const uint FILE_WRITE_DATA = 0x0002;
+    internal const uint FILE_ADD_FILE = 0x0002;
+    internal const uint FILE_ADD_SUBDIRECTORY = 0x0004;
+    internal const uint FILE_APPEND_DATA = 0x0004;
+    internal const uint FILE_TRAVERSE = 0x0020;
+    internal const uint FILE_READ_ATTRIBUTES = 0x0080;
+    internal const uint FILE_WRITE_ATTRIBUTES = 0x0100;
+    internal const uint READ_CONTROL = 0x00020000;
+    internal const uint SYNCHRONIZE = 0x00100000;
+    internal const uint FILE_SHARE_READ = 0x1;
+    internal const uint FILE_SHARE_WRITE = 0x2;
+    internal const uint FILE_SHARE_DELETE = 0x4;
+    internal const uint OPEN_EXISTING = 3;
+    internal const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+    internal const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+    internal const uint FILE_ATTRIBUTE_DIRECTORY = 0x10;
+    internal const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
+
+    // NtCreateFile dispositions and options.
+    internal const uint FILE_OPEN = 1;
+    internal const uint FILE_OPEN_IF = 3;
+    internal const uint FILE_DIRECTORY_FILE = 0x00000001;
+    internal const uint FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020;
+    internal const uint FILE_NON_DIRECTORY_FILE = 0x00000040;
+    internal const uint FILE_OPEN_REPARSE_POINT = 0x00200000;
+    internal const uint OBJ_CASE_INSENSITIVE = 0x00000040;
+    internal const uint FILE_ATTRIBUTE_NORMAL = 0x80;
+
+    internal const int STATUS_OBJECT_NAME_NOT_FOUND = unchecked((int)0xC0000034);
+    internal const int STATUS_OBJECT_PATH_NOT_FOUND = unchecked((int)0xC000003A);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct UNICODE_STRING
+    {
+        internal ushort Length;
+        internal ushort MaximumLength;
+        internal IntPtr Buffer;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct OBJECT_ATTRIBUTES
+    {
+        internal int Length;
+        internal IntPtr RootDirectory;
+        internal IntPtr ObjectName;
+        internal uint Attributes;
+        internal IntPtr SecurityDescriptor;
+        internal IntPtr SecurityQualityOfService;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct IO_STATUS_BLOCK
+    {
+        internal IntPtr Status;
+        internal UIntPtr Information;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BY_HANDLE_FILE_INFORMATION
+    {
+        internal uint FileAttributes;
+        internal System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        internal System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        internal System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        internal uint VolumeSerialNumber;
+        internal uint FileSizeHigh;
+        internal uint FileSizeLow;
+        internal uint NumberOfLinks;
+        internal uint FileIndexHigh;
+        internal uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(
+        string fileName, uint desiredAccess, uint shareMode, IntPtr securityAttributes, uint creationDisposition,
+        uint flagsAndAttributes, IntPtr templateFile);
+
+    [DllImport("ntdll.dll")]
+    internal static extern int NtCreateFile(
+        out Microsoft.Win32.SafeHandles.SafeFileHandle fileHandle, uint desiredAccess, ref OBJECT_ATTRIBUTES objectAttributes,
+        out IO_STATUS_BLOCK ioStatusBlock, IntPtr allocationSize, uint fileAttributes, uint shareAccess,
+        uint createDisposition, uint createOptions, IntPtr eaBuffer, uint eaLength);
+
+    [DllImport("ntdll.dll")]
+    internal static extern uint RtlNtStatusToDosError(int status);
+
+    [DllImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern uint GetFinalPathNameByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, [Out] char[] filePath, uint filePathLength, uint flags);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, out BY_HANDLE_FILE_INFORMATION information);
+
+    [DllImport("kernel32.dll", EntryPoint = "GetLongPathNameW", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern uint GetLongPathName(string shortPath, [Out] char[]? longPath, uint bufferLength);
 
     // ---- shell32 -------------------------------------------------------------------------------
 

@@ -41,12 +41,13 @@ internal interface IAppHost
     SecurityContext GetSecurityContext();
 
     /// <summary>
-    /// Opens an https link in the default browser. When the app is elevated the browser is still
-    /// started without administrator rights. Failures are logged.
+    /// Opens an https link in the default browser. When the app is elevated the browser is started without
+    /// administrator rights through the desktop shell, or not at all; only on an account with no normal-rights
+    /// context (UAC off, built-in Administrator) does it get the app's rights. Failures are logged.
     /// </summary>
     void OpenLink(string httpsUrl);
 
-    /// <summary>Shows the folder that holds settings.json in File Explorer (never elevated).</summary>
+    /// <summary>Shows the folder that holds settings.json in File Explorer (launched like <see cref="OpenLink"/>).</summary>
     void OpenSettingsFolder();
 
     /// <summary>True only when the current user's Run entry points at this executable.</summary>

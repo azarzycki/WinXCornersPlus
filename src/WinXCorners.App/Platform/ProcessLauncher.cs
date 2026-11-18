@@ -15,21 +15,24 @@ internal sealed class ProcessLauncher : IProcessLauncher
 {
     private readonly BoundedLog _log;
     private readonly SystemDirectories _directories;
-    private readonly bool _isElevated;
+    private readonly ElevationMode _elevation;
     private readonly ShellExecuteLauncher _deElevatedLaunch;
 
     /// <param name="log">Where every outcome is written.</param>
     /// <param name="directories">System folders Core plans with.</param>
-    /// <param name="isElevated">Whether this process is elevated; then every launch is de-elevated.</param>
+    /// <param name="elevation">
+    /// This process's elevation. With a normal-rights shell every launch is de-elevated (and fails closed); with no
+    /// normal-rights context on the account, launches start directly (Core's LaunchPlanner decides).
+    /// </param>
     /// <param name="deElevatedLaunch">
     /// Performs a de-elevated launch; defaults to <see cref="DeElevatedLauncher.TryShellExecute"/>. Tests substitute
     /// it to prove that an elevated app never falls back to starting anything itself.
     /// </param>
-    internal ProcessLauncher(BoundedLog log, SystemDirectories directories, bool isElevated, ShellExecuteLauncher? deElevatedLaunch = null)
+    internal ProcessLauncher(BoundedLog log, SystemDirectories directories, ElevationMode elevation, ShellExecuteLauncher? deElevatedLaunch = null)
     {
         _log = log ?? throw new ArgumentNullException(nameof(log));
         _directories = directories ?? throw new ArgumentNullException(nameof(directories));
-        _isElevated = isElevated;
+        _elevation = elevation;
         _deElevatedLaunch = deElevatedLaunch ?? DeElevatedLauncher.TryShellExecute;
     }
 
@@ -37,7 +40,7 @@ internal sealed class ProcessLauncher : IProcessLauncher
     public bool TryLaunch(LaunchRequest request, out string? error)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (!LaunchPlanner.TryPlan(request, _isElevated, _directories, out var plan, out var planError))
+        if (!LaunchPlanner.TryPlan(request, _elevation, _directories, out var plan, out var planError))
         {
             error = planError;
             _log.Add($"Launch refused: {planError} Target: {DisplayText.ForDisplay(request.Target)}");

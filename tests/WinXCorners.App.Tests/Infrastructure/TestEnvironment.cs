@@ -44,6 +44,27 @@ internal static class TestEnvironment
         return true;
     }
 
+    /// <summary>
+    /// Appends one line to the file named by WXC_TEST_FACTS (set by CI); build/Write-TestSummary.ps1 puts those lines in
+    /// the job summary. Facts are what the runner turned out to be (UAC state, shell elevation), not test results.
+    /// </summary>
+    internal static void RecordFact(string fact)
+    {
+        var path = Environment.GetEnvironmentVariable("WXC_TEST_FACTS");
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        lock (FactsLock)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+            File.AppendAllText(path, fact + Environment.NewLine);
+        }
+    }
+
+    private static readonly Lock FactsLock = new();
+
     internal static string Describe()
     {
         return $"Windows build {Environment.OSVersion.Version.Build}, {(IsElevated ? "elevated" : "not elevated")}, " +

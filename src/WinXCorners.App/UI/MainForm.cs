@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
+using WinXCorners.Core.HotCorners;
 using WinXCorners.Core.Model;
 using WinXCorners.Core.Security;
 
@@ -42,6 +43,7 @@ internal sealed class MainForm : Form
     private readonly SingleWindow<LogWindowForm> _logWindow;
     private readonly SingleWindow<AboutForm> _aboutWindow;
     private readonly SingleWindow<SecurityInfoForm> _securityWindow;
+    private readonly InputDesktop _inputDesktop = new();
 
     private Rectangle[] _screenBounds = [];
     private Icon? _trayIconImage;
@@ -49,6 +51,7 @@ internal sealed class MainForm : Form
     private bool _started;
     private bool _shuttingDown;
     private bool _rawInputRegistered;
+    private bool _sessionNotificationsRegistered;
     private bool _trayHiddenThisSession;
     private bool _trayForcedVisible;
     private bool _saveFailureLogged;
@@ -88,14 +91,15 @@ internal sealed class MainForm : Form
         RefreshScreenBounds();
         _monitor = new HotCornerMonitor(
             () => _host.Settings.Current,
-            () => Cursor.Position,
+            InputDesktop.TryGetCursorPosition,
             ScreenBoundsAt,
             () => (MouseButtons & (MouseButtons.Left | MouseButtons.Middle | MouseButtons.Right)) != MouseButtons.None,
             _host.Keys.IsKeyDown,
             () => Environment.TickCount64,
             () => _flyout.IsOpen || _flyout.IsCornerMenuOpen,
             _host.Foreground.IsFullScreenForeground,
-            _host.Log);
+            _host.Log,
+            _inputDesktop.IsInputDesktopOurs);
         _monitor.CountdownRequested += _countdown.ShowCountdown;
         _monitor.CountdownHidden += _countdown.HideCountdown;
         // The executor runs the action on its own thread, with a snapshot taken here on the UI thread.
@@ -154,6 +158,8 @@ internal sealed class MainForm : Form
 
     internal bool IsRawInputRegistered => _rawInputRegistered;
 
+    internal bool IsSessionNotificationRegistered => _sessionNotificationsRegistered;
+
     internal NotifyIcon TrayIcon => _trayIcon;
 
     internal HotCornerMonitor HotCorners => _monitor;
@@ -184,7 +190,8 @@ internal sealed class MainForm : Form
         UpdateTrayVisibility();
         _hotCornerTimer.Start();
 
-        var notices = StartupNotices.Build(_host.LoadResult, () => _host.GetSecurityContext().SettingsPath, _host.Startup.GetStaleEntryPath());
+        var notices = StartupNotices.Build(_host.LoadResult, () => _host.GetSecurityContext().SettingsPath,
+            _host.Startup.GetStaleEntryPath(), _host.Startup.GetEntryState());
         foreach (var notice in notices)
         {
             _host.Log.Add(notice);
@@ -253,12 +260,26 @@ internal sealed class MainForm : Form
         base.OnHandleCreated(e);
         _host.Executor.MainWindowHandle = Handle;
         RegisterRawInput();
+
+        // Lock, unlock, disconnect and reconnect arrive as WM_WTSSESSION_CHANGE (review V2 D2).
+        _sessionNotificationsRegistered = NativeMethods.WTSRegisterSessionNotification(Handle, NativeMethods.NOTIFY_FOR_THIS_SESSION);
+        if (!_sessionNotificationsRegistered)
+        {
+            _host.Log.Add($"Session notifications could not be registered (error {Marshal.GetLastPInvokeError()}); " +
+                          "hot corners still pause whenever the pointer is not on this desktop.");
+        }
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
         // Raw input registrations belong to the window; a recreated handle registers again.
         _rawInputRegistered = false;
+        if (_sessionNotificationsRegistered)
+        {
+            NativeMethods.WTSUnRegisterSessionNotification(Handle);
+            _sessionNotificationsRegistered = false;
+        }
+
         if (_host.Executor.MainWindowHandle == Handle)
         {
             _host.Executor.MainWindowHandle = IntPtr.Zero;
@@ -284,6 +305,9 @@ internal sealed class MainForm : Form
             case WmDisplayChange:
                 RefreshScreenBounds();
                 _monitor.Reset();
+                break;
+            case NativeMethods.WM_WTSSESSION_CHANGE:
+                _monitor.OnSessionChange((SessionChange)(int)m.WParam);
                 break;
             case WmSettingChange:
             case WmThemeChanged:
@@ -462,7 +486,9 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var risks = SecurityPosture.DescribeElevation(_host.Settings.Current, _host.GetSecurityContext().Install, everyStart: false);
+        var context = _host.GetSecurityContext();
+        var risks = SecurityPosture.DescribeElevation(_host.Settings.Current, context.Install, everyStart: false,
+            context.Elevation.AfterElevation());
         if (!ConfirmElevation(risks))
         {
             _host.Log.Add("Restart as administrator cancelled.");

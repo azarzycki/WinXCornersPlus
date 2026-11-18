@@ -10,7 +10,8 @@ namespace WinXCorners.App;
 /// Global exception handling (review M3). An exception that escapes a UI event handler is logged, appended to
 /// <c>%LOCALAPPDATA%\WinXCornersPlus\crash.log</c> and reported once in a non-modal notification, and the tray
 /// app keeps running. An exception on another thread ends the process (the runtime decides that); it is still
-/// written to crash.log first. Nothing here ever throws.
+/// written to crash.log first. Nothing here ever throws. An elevated process passes no path: it writes no file at all
+/// (review V2 D1), and the in-app log keeps the summary.
 /// </summary>
 internal sealed class CrashReporter
 {
@@ -20,21 +21,30 @@ internal sealed class CrashReporter
     internal const string NotificationText =
         "Something went wrong inside WinXCornersPlus. It is still running. Details are in the log window and in crash.log.";
 
-    private readonly string _crashLogPath;
+    /// <summary>The notification when no crash.log is written (an elevated session).</summary>
+    internal const string NotificationTextWithoutFile =
+        "Something went wrong inside WinXCornersPlus. It is still running. Details are in the log window.";
+
+    private readonly string? _crashLogPath;
     private readonly Lock _sync = new();
     private BoundedLog? _log;
     private Action<string>? _notify;
     private bool _notified;
     private bool _installed;
 
-    /// <param name="crashLogPath">Full path of crash.log (tests use a temp folder).</param>
-    internal CrashReporter(string crashLogPath)
+    /// <param name="crashLogPath">Full path of crash.log (tests use a temp folder), or null to write no file.</param>
+    internal CrashReporter(string? crashLogPath)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(crashLogPath);
+        if (crashLogPath is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(crashLogPath);
+        }
+
         _crashLogPath = crashLogPath;
     }
 
-    internal string CrashLogPath => _crashLogPath;
+    /// <summary>Where crash.log is written, or null when this reporter writes no file.</summary>
+    internal string? CrashLogPath => _crashLogPath;
 
     /// <summary>Why the last write to crash.log failed, or null.</summary>
     internal string? LastCrashLogError { get; private set; }
@@ -117,7 +127,7 @@ internal sealed class CrashReporter
 
         try
         {
-            notify(NotificationText);
+            notify(_crashLogPath is null ? NotificationTextWithoutFile : NotificationText);
         }
         catch (InvalidOperationException ex)
         {
@@ -157,6 +167,11 @@ internal sealed class CrashReporter
     /// <summary>Best effort: a crash log that cannot be written must not cause a second failure.</summary>
     private void AppendToCrashLog(string where, string details)
     {
+        if (_crashLogPath is null)
+        {
+            return;
+        }
+
         var entry = new StringBuilder()
             .Append(DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture))
             .Append(" [").Append(where).Append("] ")

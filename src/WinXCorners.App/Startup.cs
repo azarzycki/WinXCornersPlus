@@ -66,6 +66,11 @@ internal static class Startup
     internal const string AutoElevateHeading = "Settings ask WinXCornersPlus to run as administrator";
     internal const string ContinueToWindowsPromptText = "Continue to the Windows prompt";
 
+    /// <summary>Shown when another copy holds the single-instance mutex but could not be asked to open Settings.</summary>
+    internal const string NotRespondingText =
+        "WinXCornersPlus appears to be running but did not respond. If you cannot find it, end WinXCornersPlus.exe in " +
+        "Task Manager (or sign out and in again) and start it once more.";
+
     /// <summary>How long a restarted copy waits for its predecessor to exit and release the single-instance mutex.</summary>
     internal static readonly TimeSpan RestartHandOverTimeout = TimeSpan.FromSeconds(5);
 
@@ -82,14 +87,20 @@ internal static class Startup
     /// <param name="restartedFromProcessId">From <c>--restarted-from</c>: wait for that process to exit first.</param>
     /// <param name="tryAcquire">(pid to wait for, timeout) -> the instance, or null when another copy runs.</param>
     /// <param name="signalExisting">Asks the running copy to show Settings; false when it could not be reached.</param>
+    /// <param name="showError">
+    /// Tells the user when the running copy could not be reached (review V2 D6: the second launch used to exit
+    /// silently, which hid a squatted or locked single-instance object).
+    /// </param>
     internal static StartupOutcome AcquireSingleInstance(
         int? restartedFromProcessId,
         Func<int?, TimeSpan, SingleInstance?> tryAcquire,
         Func<bool> signalExisting,
+        Action<string> showError,
         out SingleInstance? instance)
     {
         ArgumentNullException.ThrowIfNull(tryAcquire);
         ArgumentNullException.ThrowIfNull(signalExisting);
+        ArgumentNullException.ThrowIfNull(showError);
 
         instance = tryAcquire(restartedFromProcessId, RestartHandOverTimeout);
         if (instance is not null)
@@ -98,8 +109,12 @@ internal static class Startup
         }
 
         // Nothing to log to yet (the settings are not loaded in a second copy on purpose); the running copy
-        // logs that it was activated.
-        _ = signalExisting();
+        // logs that it was activated. When it cannot be reached, the user is told instead of nothing happening.
+        if (!signalExisting())
+        {
+            showError(NotRespondingText);
+        }
+
         return StartupOutcome.ExitAnotherInstance;
     }
 
@@ -121,7 +136,9 @@ internal static class Startup
             case AutoElevateAction.AskBeforeElevating:
                 // The flag lives in a user-writable file and no administrator session was ever approved here, so
                 // the user sees what it means before Windows shows a familiar-looking prompt.
-                var risks = SecurityPosture.DescribeElevation(host.Settings.Current, host.GetSecurityContext().Install, everyStart: true);
+                var context = host.GetSecurityContext();
+                var risks = SecurityPosture.DescribeElevation(host.Settings.Current, context.Install, everyStart: true,
+                    context.Elevation.AfterElevation());
                 if (confirmAutoElevation(risks))
                 {
                     return RestartElevated(host);
@@ -167,7 +184,8 @@ internal static class Startup
 
         // AskFirstTimeConsent, AskToApproveChanges, or anything unexpected: ask (fail closed).
         var settings = host.Settings.Current;
-        var risks = SecurityPosture.DescribeElevation(settings, host.GetSecurityContext().Install, settings.AlwaysRunAsAdministrator);
+        var context = host.GetSecurityContext();
+        var risks = SecurityPosture.DescribeElevation(settings, context.Install, settings.AlwaysRunAsAdministrator, context.Elevation);
         if (prompts.ApproveElevatedSettings(settings, seal, risks))
         {
             if (!host.ApproveCurrentSettings())

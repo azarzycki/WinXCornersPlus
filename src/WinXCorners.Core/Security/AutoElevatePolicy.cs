@@ -16,29 +16,34 @@ public enum AutoElevateAction
 /// Decides what a normal-rights start does when settings say "Always run as administrator".
 /// </summary>
 /// <remarks>
-/// That flag lives in settings.json, which any program running as the user can edit. If such a
-/// program switched it on, the user's first sign of trouble would be a UAC prompt carrying this
-/// app's familiar name. So the flag alone is never enough to raise that prompt silently: it is
-/// honoured without a question only when an administrator session has been approved on this
-/// machine before, which is recorded where normal-rights programs cannot write.
+/// That flag lives in settings.json, which any program running as the user can edit. If such a program switched it
+/// on, the user's first sign of trouble would be a UAC prompt carrying this app's familiar name. So the flag alone is
+/// never enough to raise that prompt without an explanation first: it is honoured straight away only when the
+/// approval stored where normal-rights programs cannot write (the settings seal) matches the current settings
+/// exactly. The seal covers the flag itself (format version 3), so <see cref="SealStatus.Unchanged"/> means the user
+/// approved an administrator session with "Always run as administrator" on and nothing security-relevant has changed
+/// since. Any other status (never approved, changed, unreadable, or an approval of an older format) asks first
+/// (review V2 D3: "some approval exists" used to be enough).
 /// </remarks>
 public static class AutoElevatePolicy
 {
     /// <param name="alwaysRunAsAdministrator">The setting from settings.json (untrusted).</param>
     /// <param name="isElevated">Whether this process already has administrator rights.</param>
     /// <param name="noElevateRequested">True when started with <c>--no-elevate</c>.</param>
-    /// <param name="approvalOnRecord">Whether the admin-only store holds an approval for this user.</param>
+    /// <param name="approval">
+    /// The result of <see cref="SettingsSeal.Check"/> for the current settings against the stored approval.
+    /// </param>
     public static AutoElevateAction Decide(
         bool alwaysRunAsAdministrator,
         bool isElevated,
         bool noElevateRequested,
-        bool approvalOnRecord)
+        SealStatus approval)
     {
         if (isElevated || noElevateRequested || !alwaysRunAsAdministrator)
         {
             return AutoElevateAction.DoNotElevate;
         }
 
-        return approvalOnRecord ? AutoElevateAction.Elevate : AutoElevateAction.AskBeforeElevating;
+        return approval == SealStatus.Unchanged ? AutoElevateAction.Elevate : AutoElevateAction.AskBeforeElevating;
     }
 }

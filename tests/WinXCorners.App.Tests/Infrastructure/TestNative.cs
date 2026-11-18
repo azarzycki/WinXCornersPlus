@@ -75,4 +75,45 @@ internal static class TestNative
 
     [DllImport("user32.dll")]
     internal static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    internal delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowTextW", CharSet = CharSet.Unicode)]
+    internal static extern int GetWindowText(IntPtr window, [Out] char[] text, int maxCount);
+
+    [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode)]
+    internal static extern int GetClassName(IntPtr window, [Out] char[] text, int maxCount);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetProcessMitigationPolicy(IntPtr process, int policy, out uint flags, UIntPtr length);
+
+    /// <summary>Every top-level window (visible or not) of a process: (title, class, visible).</summary>
+    internal static List<(string Title, string Class, bool Visible)> TopLevelWindowsOf(int processId)
+    {
+        var windows = new List<(string, string, bool)>();
+        EnumWindows((window, _) =>
+        {
+            GetWindowThreadProcessId(window, out var owner);
+            if (owner == (uint)processId)
+            {
+                var title = new char[512];
+                var className = new char[256];
+                var titleLength = GetWindowText(window, title, title.Length);
+                var classLength = GetClassName(window, className, className.Length);
+                windows.Add((new string(title, 0, titleLength), new string(className, 0, classLength), IsWindowVisible(window)));
+            }
+
+            return true;
+        }, IntPtr.Zero);
+        return windows;
+    }
 }

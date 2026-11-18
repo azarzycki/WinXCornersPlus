@@ -25,6 +25,8 @@ public sealed class AppHostTests : IDisposable
     {
         _output = output;
         _paths = SettingsPaths.ForApp(Path.Combine(_temp.Path, "Roaming"), Path.Combine(_temp.Path, "Program"));
+        // %APPDATA% always exists; an elevated store creates only the folder below it (through verified handles).
+        Directory.CreateDirectory(Path.Combine(_temp.Path, "Roaming"));
     }
 
     public void Dispose()
@@ -280,12 +282,52 @@ public sealed class AppHostTests : IDisposable
     public void DecideAutoElevate_combines_setting_rights_switch_and_approval(
         bool always, bool elevated, bool noElevate, bool approved, AutoElevateAction expected)
     {
-        WriteSettings(_paths.PrimaryPath, new ApplicationSettings { AlwaysRunAsAdministrator = always });
-        var approvals = new MemoryApprovalStore { Value = approved ? SettingsSeal.CreateApproval(new ApplicationSettings()) : null };
+        var settings = new ApplicationSettings { AlwaysRunAsAdministrator = always };
+        WriteSettings(_paths.PrimaryPath, settings);
+        var approvals = new MemoryApprovalStore { Value = approved ? SettingsSeal.CreateApproval(settings) : null };
 
         var host = Create(approvals, elevated, noElevate ? Options("--no-elevate") : Options());
 
         Assert.Equal(expected, host.DecideAutoElevate());
+    }
+
+    /// <summary>
+    /// Review V2 D3: the user once approved an administrator session with "Always run as administrator" off (a one-off
+    /// "Restart as administrator"). A normal-rights program then flips the flag on in settings.json. The next normal
+    /// start must explain the risk before any UAC prompt, not elevate at once because "some approval exists".
+    /// </summary>
+    [Fact]
+    public void An_approval_on_record_with_the_flag_flipped_in_the_file_asks_before_elevating()
+    {
+        var approved = new ApplicationSettings { AlwaysRunAsAdministrator = false };
+        var approvals = new MemoryApprovalStore { Value = SettingsSeal.CreateApproval(approved) };
+        var tampered = approved.Clone();
+        tampered.AlwaysRunAsAdministrator = true;
+        WriteSettings(_paths.PrimaryPath, tampered);
+
+        var host = Create(approvals, isElevated: false);
+
+        Assert.Equal(AutoElevateAction.AskBeforeElevating, host.DecideAutoElevate());
+
+        // And once elevated (after the user confirmed), the gate shows the flag as a change to approve.
+        var (action, seal) = Create(approvals, isElevated: true).EvaluateElevatedStart();
+        Assert.Equal(ElevatedStartAction.AskToApproveChanges, action);
+        Assert.Contains("Always run as administrator: off -> on", seal.Differences);
+    }
+
+    [Fact]
+    public void An_approval_of_the_previous_format_asks_before_elevating()
+    {
+        var settings = new ApplicationSettings { AlwaysRunAsAdministrator = true };
+        WriteSettings(_paths.PrimaryPath, settings);
+        // What format version 2 stored for the same settings: no "alwaysAdmin" field.
+        var v2 = SettingsSeal.CreateApproval(settings)
+            .Replace("\"version\":3", "\"version\":2", StringComparison.Ordinal)
+            .Replace(",\"alwaysAdmin\":true", string.Empty, StringComparison.Ordinal);
+
+        var host = Create(new MemoryApprovalStore { Value = v2 }, isElevated: false);
+
+        Assert.Equal(AutoElevateAction.AskBeforeElevating, host.DecideAutoElevate());
     }
 
     [Fact]

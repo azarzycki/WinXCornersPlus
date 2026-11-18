@@ -130,19 +130,19 @@ public class SettingsSealAdversarialTests
     public void Check_ApprovalWithWrongNumberOfWellFormedCommandsIsUnreadable(int count)
     {
         var commands = string.Join(",", Enumerable.Repeat("{\"name\":\"\",\"command\":\"\",\"parameters\":\"\",\"hidden\":false}", count));
-        var stored = "{\"format\":\"WinXCornersPlus.SettingsApproval\",\"version\":2,\"topLeft\":\"none\",\"topRight\":\"none\"," +
-                     "\"bottomLeft\":\"none\",\"bottomRight\":\"none\",\"customCommands\":false,\"modifier\":0,\"hideTrayIcon\":false,\"commands\":[" + commands + "]}";
+        var stored = "{\"format\":\"WinXCornersPlus.SettingsApproval\",\"version\":3,\"topLeft\":\"none\",\"topRight\":\"none\"," +
+                     "\"bottomLeft\":\"none\",\"bottomRight\":\"none\",\"customCommands\":false,\"modifier\":0,\"hideTrayIcon\":false,\"alwaysAdmin\":false,\"commands\":[" + commands + "]}";
         var check = SettingsSeal.Check(new ApplicationSettings { TopLeftActionId = "none", TopRightActionId = "none", BottomLeftActionId = "none", BottomRightActionId = "none" }, stored);
         Assert.Equal(SealStatus.Unreadable, check.Status);
     }
 
-    // Format version 2 added "hideTrayIcon" (the seal now covers the tray icon); this hand-built approval follows it.
+    // Format version 3 added "alwaysAdmin" after "hideTrayIcon" (version 2); this hand-built approval follows it.
     [Fact]
     public void Check_StoredApprovalSanityCheckOfMyHandBuiltFormatIsUnchanged()
     {
         var commands = string.Join(",", Enumerable.Repeat("{\"name\":\"\",\"command\":\"\",\"parameters\":\"\",\"hidden\":false}", 4));
-        var stored = "{\"format\":\"WinXCornersPlus.SettingsApproval\",\"version\":2,\"topLeft\":\"none\",\"topRight\":\"none\"," +
-                     "\"bottomLeft\":\"none\",\"bottomRight\":\"none\",\"customCommands\":false,\"modifier\":0,\"hideTrayIcon\":false,\"commands\":[" + commands + "]}";
+        var stored = "{\"format\":\"WinXCornersPlus.SettingsApproval\",\"version\":3,\"topLeft\":\"none\",\"topRight\":\"none\"," +
+                     "\"bottomLeft\":\"none\",\"bottomRight\":\"none\",\"customCommands\":false,\"modifier\":0,\"hideTrayIcon\":false,\"alwaysAdmin\":false,\"commands\":[" + commands + "]}";
         var check = SettingsSeal.Check(new ApplicationSettings { TopLeftActionId = "none", TopRightActionId = "none", BottomLeftActionId = "none", BottomRightActionId = "none" }, stored);
         Assert.Equal(SealStatus.Unchanged, check.Status);
     }

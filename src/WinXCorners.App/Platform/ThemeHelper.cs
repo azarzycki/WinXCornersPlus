@@ -1,3 +1,4 @@
+using WinXCorners.Core.Layout;
 using System.Security;
 using Microsoft.Win32;
 using WinXCorners.Core.Platform;
@@ -247,10 +248,9 @@ internal static class ThemeHelper
 
         internal static Color GetCountdownForegroundColor()
         {
-            var countdownBackgroundColor = GetCountdownBackgroundColor();
-            return GetRelativeLuminance(countdownBackgroundColor) >= 0.45
-                ? Color.FromArgb(20, 20, 20)
-                : Color.FromArgb(255, 255, 255);
+            // Black or white by actual WCAG contrast against the accent-derived badge (Core decides; a fixed
+            // luminance threshold gave white text below 3:1 on mid-tone accents such as orange).
+            return ColorContrast.ReadableText(GetCountdownBackgroundColor(), Color.FromArgb(20, 20, 20), Color.FromArgb(255, 255, 255));
         }
 
         /// <summary>
@@ -359,20 +359,6 @@ internal static class ThemeHelper
                 (int)Math.Round((baseColor.B * baseAmount) + (overlayColor.B * clampedOverlayAmount)));
         }
 
-        private static double GetRelativeLuminance(Color color)
-        {
-            static double ToLinear(byte channel)
-            {
-                var normalized = channel / 255d;
-                return normalized <= 0.03928
-                    ? normalized / 12.92
-                    : Math.Pow((normalized + 0.055) / 1.055, 2.4);
-            }
-
-            return (0.2126 * ToLinear(color.R)) +
-                   (0.7152 * ToLinear(color.G)) +
-                   (0.0722 * ToLinear(color.B));
-        }
     }
 
     private static bool ReadIsLightTheme()

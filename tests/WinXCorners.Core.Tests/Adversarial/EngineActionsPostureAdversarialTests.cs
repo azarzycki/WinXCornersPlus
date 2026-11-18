@@ -151,7 +151,7 @@ public class ActionPlannerAdversarialTests
             if (plan is ActionPlan.Launch launch)
             {
                 Assert.Equal(LaunchTargetKind.BuiltIn, launch.Request.Kind);
-                Assert.True(LaunchPlanner.TryPlan(launch.Request, true, Dirs, out var lp, out _));
+                Assert.True(LaunchPlanner.TryPlan(launch.Request, ElevationMode.ElevatedWithStandardShell, Dirs, out var lp, out _));
                 Assert.Equal(LaunchIntegrity.DeElevated, lp.Integrity);
             }
         }
@@ -191,7 +191,7 @@ public class ActionPlannerAdversarialTests
         s.CustomCommands[2] = new CustomCommandSettings { Command = @"  C:\Windows\System32\cmd.exe ", Parameters = "/c x", LaunchHidden = true };
         var launch = Assert.IsType<ActionPlan.Launch>(ActionPlanner.Plan(ActionCatalog.CustomId(2), s, Dirs, false));
         Assert.Equal(new LaunchRequest(@"C:\Windows\System32\cmd.exe", "/c x", true, LaunchTargetKind.CustomCommand), launch.Request);
-        Assert.True(LaunchPlanner.TryPlan(launch.Request, true, Dirs, out var plan, out _));
+        Assert.True(LaunchPlanner.TryPlan(launch.Request, ElevationMode.ElevatedWithStandardShell, Dirs, out var plan, out _));
         Assert.Equal(@"C:\Users\alex", plan.WorkingDirectory);
         Assert.True(plan.Hidden);
     }
@@ -208,7 +208,7 @@ public class SecurityPostureAdversarialTests
     {
         var s = ApplicationSettings.CreateDefault();
         s.AlwaysRunAsAdministrator = true;
-        Assert.Equal(AutoElevateAction.Elevate, AutoElevatePolicy.Decide(true, false, false, true));
+        Assert.Equal(AutoElevateAction.Elevate, AutoElevatePolicy.Decide(true, false, false, SealStatus.Unchanged));
         var items = SecurityPosture.Evaluate(s, new SecurityContext(true, Protected, false, "x"));
         var running = items.Single(i => i.Id == SecurityPosture.Ids.RunningElevated);
         Assert.True(!running.Detail.Contains("start it normally", StringComparison.Ordinal) ||

@@ -1,5 +1,27 @@
 namespace WinXCorners.Core.Platform;
 
+/// <summary>What the Run value says about this executable.</summary>
+public enum RunEntryState
+{
+    /// <summary>There is no value (or it is blank).</summary>
+    None,
+
+    /// <summary>The value starts exactly this executable.</summary>
+    ThisExecutable,
+
+    /// <summary>The value starts some other program (often an older copy that was moved).</summary>
+    OtherProgram,
+
+    /// <summary>
+    /// The value is not quoted and its program path contains spaces, so Windows may start a different, shorter path
+    /// first (<c>C:\Program.exe</c> for <c>C:\Program Files\...</c>). It is never counted as this executable.
+    /// </summary>
+    UnquotedWithSpaces,
+
+    /// <summary>The value cannot be read as a command line (an unterminated quote, an empty program).</summary>
+    Malformed
+}
+
 /// <summary>
 /// Builds and reads the HKCU <c>Run</c> value. The app compares the stored value with its own path to notice a
 /// stale entry (for example after the app was moved) and asks, rather than silently rewriting someone else's entry.
@@ -72,15 +94,38 @@ public static class StartupCommandLine
         return true;
     }
 
-    /// <summary>True when the Run value launches exactly <paramref name="executablePath"/> (normalized, case-insensitive).</summary>
-    public static bool PointsTo(string? runValue, string? executablePath)
+    /// <summary>
+    /// True when the Run value launches exactly <paramref name="executablePath"/> (normalized, case-insensitive) and
+    /// nothing else could be started in its place: an unquoted value whose program path contains spaces never counts.
+    /// </summary>
+    public static bool PointsTo(string? runValue, string? executablePath) =>
+        Classify(runValue, executablePath) == RunEntryState.ThisExecutable;
+
+    /// <summary>Classifies a Run value against this executable (see <see cref="RunEntryState"/>).</summary>
+    public static RunEntryState Classify(string? runValue, string? executablePath)
     {
-        if (string.IsNullOrWhiteSpace(executablePath) || !TryGetExecutablePath(runValue, out var path))
+        if (string.IsNullOrWhiteSpace(runValue))
         {
-            return false;
+            return RunEntryState.None;
         }
 
-        return string.Equals(path, WindowsPath.Normalize(executablePath), StringComparison.OrdinalIgnoreCase);
+        if (!TryGetExecutablePath(runValue, out var path))
+        {
+            return RunEntryState.Malformed;
+        }
+
+        // CreateProcess splits an unquoted command line at each space and tries the pieces from the shortest, so
+        // "C:\Program Files\App\app.exe" can start C:\Program.exe. Such a value is not "this executable" however
+        // well its full text matches, and is reported as stale so the user can save it again (quoted).
+        if (runValue.TrimStart()[0] != '"' && path.Any(char.IsWhiteSpace))
+        {
+            return RunEntryState.UnquotedWithSpaces;
+        }
+
+        return !string.IsNullOrWhiteSpace(executablePath) &&
+               string.Equals(path, WindowsPath.Normalize(executablePath), StringComparison.OrdinalIgnoreCase)
+            ? RunEntryState.ThisExecutable
+            : RunEntryState.OtherProgram;
     }
 
     private static string UnquotedProgram(string text)

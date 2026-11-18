@@ -23,7 +23,8 @@ internal sealed class HotCornerMonitor
     private const ushort VkMenu = 0x12;
 
     private readonly Func<ApplicationSettings> _settings;
-    private readonly Func<Point> _cursor;
+    private readonly Func<Point?> _cursor;
+    private readonly Func<bool> _inputDesktopIsOurs;
     private readonly Func<Point, Rectangle> _screenBoundsAt;
     private readonly Func<bool> _anyMouseButtonDown;
     private readonly Func<ushort, bool> _isKeyDown;
@@ -34,9 +35,13 @@ internal sealed class HotCornerMonitor
     private bool _countdownVisible;
     private HotCornerOutcome _lastOutcome = HotCornerOutcome.Idle;
     private HotCornerArea _lastBlockedArea = HotCornerArea.None;
+    private bool _pointerWasAvailable = true;
 
     /// <param name="settings">The live settings (read on every sample).</param>
-    /// <param name="cursor">Pointer position in virtual-screen coordinates.</param>
+    /// <param name="cursor">
+    /// Pointer position in virtual-screen coordinates, or null when it cannot be read (GetCursorPos fails while another
+    /// desktop has the input; review V2 D2).
+    /// </param>
     /// <param name="screenBoundsAt">Bounds of the monitor containing a point.</param>
     /// <param name="anyMouseButtonDown">Whether a mouse button is held.</param>
     /// <param name="isKeyDown">Whether a virtual key is down (for the modifier key).</param>
@@ -44,16 +49,18 @@ internal sealed class HotCornerMonitor
     /// <param name="suppressed">True while the flyout or its corner menu is open.</param>
     /// <param name="isFullScreenForeground">Whether a full-screen window is in front (only asked when it matters).</param>
     /// <param name="log">Where triggers and full-screen blocks are logged.</param>
+    /// <param name="inputDesktopIsOurs">Whether the input desktop is the one this app runs on; null means always.</param>
     internal HotCornerMonitor(
         Func<ApplicationSettings> settings,
-        Func<Point> cursor,
+        Func<Point?> cursor,
         Func<Point, Rectangle> screenBoundsAt,
         Func<bool> anyMouseButtonDown,
         Func<ushort, bool> isKeyDown,
         Func<long> clock,
         Func<bool> suppressed,
         Func<bool> isFullScreenForeground,
-        BoundedLog log)
+        BoundedLog log,
+        Func<bool>? inputDesktopIsOurs = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _cursor = cursor ?? throw new ArgumentNullException(nameof(cursor));
@@ -64,8 +71,12 @@ internal sealed class HotCornerMonitor
         _suppressed = suppressed ?? throw new ArgumentNullException(nameof(suppressed));
         ArgumentNullException.ThrowIfNull(isFullScreenForeground);
         _log = log ?? throw new ArgumentNullException(nameof(log));
+        _inputDesktopIsOurs = inputDesktopIsOurs ?? (static () => true);
         _engine = new HotCornerEngine(_ => isFullScreenForeground());
     }
+
+    /// <summary>Lock and connection state of this session, fed by <see cref="OnSessionChange"/>.</summary>
+    internal SessionActivity Session { get; } = new();
 
     /// <summary>Show (or update) the countdown badge: screen bounds, corner, time left.</summary>
     internal event Action<Rectangle, HotCornerArea, TimeSpan>? CountdownRequested;
@@ -80,15 +91,27 @@ internal sealed class HotCornerMonitor
     internal HotCornerDecision Evaluate()
     {
         var settings = _settings();
-        var cursor = _cursor();
-        var bounds = _screenBoundsAt(cursor);
+        var position = _cursor();
+        // Only ask about the desktop when the rest says the pointer is there: it costs a few system calls.
+        var available = Session.IsPointerAvailable(position.HasValue, position.HasValue && Session.IsActive && _inputDesktopIsOurs());
+        if (available != _pointerWasAvailable)
+        {
+            _pointerWasAvailable = available;
+            _log.Add(available
+                ? "Hot corners resumed: the pointer is back on this desktop. A corner fires only after the pointer has left it."
+                : "Hot corners paused: the session is locked or disconnected, or another desktop has the pointer.");
+        }
+
+        var cursor = position ?? Point.Empty;
+        var bounds = available ? _screenBoundsAt(cursor) : Rectangle.Empty;
         var input = new HotCornerInput(
             cursor,
             bounds,
             _clock(),
-            _anyMouseButtonDown(),
-            IsModifierSatisfied(settings.HotCornerModifierKey, _isKeyDown),
-            _suppressed());
+            available && _anyMouseButtonDown(),
+            available && IsModifierSatisfied(settings.HotCornerModifierKey, _isKeyDown),
+            _suppressed(),
+            available);
 
         var decision = _engine.Evaluate(settings, in input);
         switch (decision.Outcome)
@@ -118,6 +141,18 @@ internal sealed class HotCornerMonitor
 
         _lastOutcome = decision.Outcome;
         return decision;
+    }
+
+    /// <summary>
+    /// A WM_WTSSESSION_CHANGE notification. Locking or disconnecting pauses hot corners at once (the next evaluation
+    /// also sees it); after unlocking, a corner fires only once the pointer has been seen outside every corner.
+    /// </summary>
+    internal void OnSessionChange(SessionChange change)
+    {
+        if (Session.Apply(change))
+        {
+            Reset();
+        }
     }
 
     /// <summary>Forgets any dwell and latch (settings changed, display changed) and hides the badge.</summary>

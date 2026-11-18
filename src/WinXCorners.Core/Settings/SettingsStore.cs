@@ -20,7 +20,20 @@ public enum SettingsLoadStatus
     RecoveredFromCorruptFile,
 
     /// <summary>The primary file exists but could not be read; defaults were returned and the file left alone.</summary>
-    ReadFailed
+    ReadFailed,
+
+    /// <summary>
+    /// Elevated session only: the primary file is not valid settings. It was left exactly as it is (an elevated
+    /// session never moves or backs up files), defaults were returned and saving is blocked for this session.
+    /// </summary>
+    KeptInvalidFile,
+
+    /// <summary>
+    /// Elevated session only: the settings folder or file is redirected (a junction, symbolic link, hard link or other
+    /// reparse point, or a path that resolves somewhere else). Nothing was read, defaults were returned and saving is
+    /// blocked for this session.
+    /// </summary>
+    RefusedRedirectedLocation
 }
 
 /// <param name="Settings">Sanitized settings, always usable.</param>
@@ -45,16 +58,25 @@ public sealed record SettingsSaveResult(bool Succeeded, bool Written, string? Er
 /// <remarks>
 /// The guiding rule is that a user's file is never destroyed: a file that cannot be parsed is moved to a
 /// timestamped backup before anything replaces it, and a file that cannot be read (or backed up) blocks
-/// saving for the rest of the session instead of being overwritten with defaults.
+/// saving for the rest of the session instead of being overwritten with defaults. What the store may do on disk
+/// is set by its <see cref="SettingsStorePolicy"/>: an elevated store never moves, backs up or migrates anything
+/// and reads and writes only through an <see cref="IVerifiedSettingsFile"/> (review V2 D1).
 /// </remarks>
 public sealed class SettingsStore
 {
     /// <summary>Files larger than this are treated as corrupt; a real settings file is a few KiB.</summary>
     public const int MaxFileBytes = 1024 * 1024;
 
+    /// <summary>Appended to every elevated-session problem: where and how the user can fix it.</summary>
+    public const string FixFromNormalSessionText =
+        "An administrator session never moves, repairs or replaces this file. Fix or delete it from a session " +
+        "without administrator rights (exit WinXCornersPlus and start it normally), then start it as administrator again.";
+
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     private readonly TimeProvider _timeProvider;
+    private readonly SettingsStorePolicy _policy;
+    private readonly IVerifiedSettingsFile? _verifiedFile;
 
     // Set when the primary file holds data we could not read; saving would destroy it.
     private string? _saveBlockedReason;
@@ -62,15 +84,35 @@ public sealed class SettingsStore
     // Set when the primary file is corrupt but moving it aside failed; Save retries the move first.
     private bool _corruptBackupPending;
 
+    /// <summary>A store for a normal-rights session (<see cref="SettingsStorePolicy.Normal"/>).</summary>
     public SettingsStore(SettingsPaths paths, TimeProvider? timeProvider = null)
+        : this(paths, SettingsStorePolicy.Normal, null, timeProvider)
+    {
+    }
+
+    /// <param name="paths">Where settings live.</param>
+    /// <param name="policy">What the store may do on disk; <see cref="SettingsStorePolicy.For"/> picks it.</param>
+    /// <param name="verifiedFile">Required when the policy asks for verified access, ignored otherwise.</param>
+    /// <param name="timeProvider">Clock for backup names.</param>
+    public SettingsStore(SettingsPaths paths, SettingsStorePolicy policy, IVerifiedSettingsFile? verifiedFile, TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentException.ThrowIfNullOrWhiteSpace(paths.PrimaryPath);
+        ArgumentNullException.ThrowIfNull(policy);
+        if (policy.RequireVerifiedFileAccess && verifiedFile is null)
+        {
+            throw new ArgumentException("This policy reads and writes only through verified file access, and none was given.", nameof(verifiedFile));
+        }
+
         Paths = paths;
+        _policy = policy;
+        _verifiedFile = policy.RequireVerifiedFileAccess ? verifiedFile : null;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public SettingsPaths Paths { get; }
+
+    public SettingsStorePolicy Policy => _policy;
 
     /// <summary>Loads settings, migrating or recovering as described by <see cref="SettingsLoadStatus"/>.</summary>
     public SettingsLoadResult Load()
@@ -78,7 +120,8 @@ public sealed class SettingsStore
         _saveBlockedReason = null;
         _corruptBackupPending = false;
 
-        var primary = ReadSettingsFile(Paths.PrimaryPath);
+        var primary = _verifiedFile is not null ? ReadVerified(_verifiedFile) : ReadSettingsFile(Paths.PrimaryPath);
+        var elevatedHint = _policy.IsElevatedSession ? " " + FixFromNormalSessionText : string.Empty;
         switch (primary.Kind)
         {
             case ReadKind.Parsed:
@@ -87,21 +130,35 @@ public sealed class SettingsStore
 
             case ReadKind.Unreadable:
                 _saveBlockedReason = $"The settings file could not be read at startup ({primary.Error}); it is not overwritten so that it is not lost.";
-                return Defaults(SettingsLoadStatus.ReadFailed, $"Could not read {Paths.PrimaryPath}: {primary.Error}");
+                return Defaults(SettingsLoadStatus.ReadFailed, $"Could not read {Paths.PrimaryPath}: {primary.Error}{elevatedHint}");
+
+            case ReadKind.Refused:
+                _saveBlockedReason = $"The settings location is redirected ({primary.Error}); this administrator session does not write to it.";
+                return Defaults(SettingsLoadStatus.RefusedRedirectedLocation,
+                    $"{Paths.PrimaryPath} was not read: {primary.Error}{elevatedHint}");
+
+            case ReadKind.Invalid when !_policy.MoveUnreadableFileAside:
+                _saveBlockedReason = "The settings file is not valid settings; this administrator session leaves it untouched and does not save.";
+                return Defaults(SettingsLoadStatus.KeptInvalidFile,
+                    $"{Paths.PrimaryPath} is not valid settings: {primary.Error} It was left untouched.{elevatedHint}");
 
             case ReadKind.Invalid:
                 return RecoverFromCorruptFile(primary.Error!);
 
             default:
-                return MigrateFromLegacy();
+                return _policy.MigrateLegacyFile ? MigrateFromLegacy() : Defaults(SettingsLoadStatus.CreatedDefaults, null);
         }
     }
 
     /// <summary>
-    /// Writes a sanitized copy of <paramref name="settings"/> (the argument is never modified) by writing a
-    /// temp file in the same folder, flushing it to disk and renaming it over the target, so a crash or
-    /// power loss leaves either the old or the new file, never a torn one. Skips the write only when the file
-    /// on disk already holds exactly the bytes that would be written.
+    /// Writes a sanitized copy of <paramref name="settings"/> (the argument is never modified). A normal-rights store
+    /// writes a temp file in the same folder, flushes it to disk and renames it over the target, so a crash or power
+    /// loss leaves either the old or the new file, never a torn one. An elevated store writes in place through the
+    /// verified file access instead (see <see cref="IVerifiedSettingsFile"/>): a temp file and a rename are two more
+    /// path operations inside a folder other programs control, which is exactly what an elevated process must not
+    /// perform, and the price (a torn file after a power loss during a save) is recoverable: the next normal-rights
+    /// start moves an unreadable file aside and says so. Skips the write only when the file on disk already holds
+    /// exactly the bytes that would be written.
     /// </summary>
     public SettingsSaveResult Save(ApplicationSettings settings)
     {
@@ -130,6 +187,20 @@ public sealed class SettingsStore
         // store last wrote would not do: another program may have changed the file since, and reporting success
         // would then leave its content in place.
         var bytes = StrictUtf8.GetBytes(json);
+        if (_verifiedFile is not null)
+        {
+            var current = _verifiedFile.Read(bytes.Length + 1);
+            if (current.Status == VerifiedReadStatus.Read && current.Content is { } existing && existing.AsSpan().SequenceEqual(bytes))
+            {
+                return new SettingsSaveResult(true, false, null);
+            }
+
+            var verifiedError = _verifiedFile.Write(bytes);
+            return verifiedError is null
+                ? new SettingsSaveResult(true, true, null)
+                : new SettingsSaveResult(false, false, verifiedError);
+        }
+
         if (FileHasContent(Paths.PrimaryPath, bytes))
         {
             return new SettingsSaveResult(true, false, null);
@@ -185,6 +256,20 @@ public sealed class SettingsStore
         return new SettingsLoadResult(ApplicationSettings.CreateDefault(), status, [], backupPath, error);
     }
 
+    private static ReadOutcome ReadVerified(IVerifiedSettingsFile file)
+    {
+        // One byte past the limit, as below: enough to know the file is too big.
+        var read = file.Read(MaxFileBytes + 1);
+        return read.Status switch
+        {
+            VerifiedReadStatus.Missing => new ReadOutcome(ReadKind.Missing),
+            VerifiedReadStatus.Refused => new ReadOutcome(ReadKind.Refused, Error: read.Error ?? "the location is redirected."),
+            VerifiedReadStatus.Read when read.Content is not null => Parse(read.Content, read.Content.Length),
+            // Failed, or a Read without content (an implementation bug): unreadable, so it is not overwritten.
+            _ => new ReadOutcome(ReadKind.Unreadable, Error: read.Error ?? "the file could not be read.")
+        };
+    }
+
     private static ReadOutcome ReadSettingsFile(string path)
     {
         if (!File.Exists(path))
@@ -215,6 +300,11 @@ public sealed class SettingsStore
             return new ReadOutcome(ReadKind.Unreadable, Error: ex.Message);
         }
 
+        return Parse(buffer, length);
+    }
+
+    private static ReadOutcome Parse(byte[] buffer, int length)
+    {
         if (length > MaxFileBytes)
         {
             return new ReadOutcome(ReadKind.Invalid,
@@ -346,7 +436,8 @@ public sealed class SettingsStore
         Missing,
         Parsed,
         Unreadable,
-        Invalid
+        Invalid,
+        Refused
     }
 
     private sealed record ReadOutcome(ReadKind Kind, ApplicationSettings? Settings = null, string? Error = null);

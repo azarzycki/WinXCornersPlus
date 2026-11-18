@@ -19,7 +19,7 @@ public class LaunchAndPathAdversarialTests
     [InlineData(@"https://evil.example\@github.com/")]
     public void Link_RejectsUserInfo(string url)
     {
-        Assert.False(LaunchPlanner.TryPlan(new LaunchRequest(url, "", false, LaunchTargetKind.Link), true, Dirs, out _, out _));
+        Assert.False(LaunchPlanner.TryPlan(new LaunchRequest(url, "", false, LaunchTargetKind.Link), ElevationMode.ElevatedWithStandardShell, Dirs, out _, out _));
         Assert.Throws<ArgumentException>(() => SystemTargets.Link(url));
     }
 
@@ -36,7 +36,7 @@ public class LaunchAndPathAdversarialTests
     [InlineData("https://")]
     public void Link_RejectsNonPlainHttps(string url)
     {
-        Assert.False(LaunchPlanner.TryPlan(new LaunchRequest(url, "", false, LaunchTargetKind.Link), true, Dirs, out _, out _));
+        Assert.False(LaunchPlanner.TryPlan(new LaunchRequest(url, "", false, LaunchTargetKind.Link), ElevationMode.ElevatedWithStandardShell, Dirs, out _, out _));
     }
 
     [Theory]
@@ -44,7 +44,7 @@ public class LaunchAndPathAdversarialTests
     [InlineData("  https://example.com  ")]
     public void Link_AcceptsMixedCaseAndTrimsAndIsDeElevated(string url)
     {
-        Assert.True(LaunchPlanner.TryPlan(new LaunchRequest(url, "", true, LaunchTargetKind.Link), true, Dirs, out var plan, out _));
+        Assert.True(LaunchPlanner.TryPlan(new LaunchRequest(url, "", true, LaunchTargetKind.Link), ElevationMode.ElevatedWithStandardShell, Dirs, out var plan, out _));
         Assert.Equal(LaunchIntegrity.DeElevated, plan.Integrity);
         Assert.False(plan.Hidden);
         Assert.Equal(@"C:\Users\alex", plan.WorkingDirectory);
@@ -61,7 +61,7 @@ public class LaunchAndPathAdversarialTests
     [InlineData(@"\??\C:\Windows\explorer.exe")]
     public void BuiltIn_LaunchesTheNormalizedPathItValidatedAndRejectsDevicePaths(string target)
     {
-        Assert.False(LaunchPlanner.TryPlan(new LaunchRequest(target, "", false, LaunchTargetKind.BuiltIn), true, Dirs, out _, out var error));
+        Assert.False(LaunchPlanner.TryPlan(new LaunchRequest(target, "", false, LaunchTargetKind.BuiltIn), ElevationMode.ElevatedWithStandardShell, Dirs, out _, out var error));
         Assert.NotNull(error);
     }
 
@@ -71,7 +71,7 @@ public class LaunchAndPathAdversarialTests
     [InlineData(@"""C:\Windows\.\System32\taskmgr.exe""", @"C:\Windows\System32\taskmgr.exe")]
     public void BuiltIn_FileNameIsTheNormalizedPathThatWasValidated(string target, string expected)
     {
-        Assert.True(LaunchPlanner.TryPlan(new LaunchRequest(target, "", false, LaunchTargetKind.BuiltIn), true, Dirs, out var plan, out _));
+        Assert.True(LaunchPlanner.TryPlan(new LaunchRequest(target, "", false, LaunchTargetKind.BuiltIn), ElevationMode.ElevatedWithStandardShell, Dirs, out var plan, out _));
         Assert.Equal(expected, plan.FileName);
         Assert.Equal(WindowsPath.Normalize(plan.FileName), plan.FileName);
     }
@@ -79,9 +79,9 @@ public class LaunchAndPathAdversarialTests
     [Fact]
     public void BuiltIn_UriTargetAndCustomCommandsAreLaunchedAsGiven()
     {
-        Assert.True(LaunchPlanner.TryPlan(new LaunchRequest("ms-settings:display", "", false, LaunchTargetKind.BuiltIn), true, Dirs, out var uri, out _));
+        Assert.True(LaunchPlanner.TryPlan(new LaunchRequest("ms-settings:display", "", false, LaunchTargetKind.BuiltIn), ElevationMode.ElevatedWithStandardShell, Dirs, out var uri, out _));
         Assert.Equal("ms-settings:display", uri.FileName);
-        Assert.True(LaunchPlanner.TryPlan(new LaunchRequest(@"C:\Tools\..\x.exe", "", false, LaunchTargetKind.CustomCommand), true, Dirs, out var custom, out _));
+        Assert.True(LaunchPlanner.TryPlan(new LaunchRequest(@"C:\Tools\..\x.exe", "", false, LaunchTargetKind.CustomCommand), ElevationMode.ElevatedWithStandardShell, Dirs, out var custom, out _));
         Assert.Equal(@"C:\Tools\..\x.exe", custom.FileName);
     }
 
@@ -101,7 +101,7 @@ public class LaunchAndPathAdversarialTests
     [InlineData(@"\\localhost\C$\Windows\explorer.exe")]
     public void BuiltIn_RejectsTargetsThatAreNotAbsoluteSystemPaths(string target)
     {
-        Assert.False(LaunchPlanner.TryPlan(new LaunchRequest(target, "", false, LaunchTargetKind.BuiltIn), true, Dirs, out _, out _));
+        Assert.False(LaunchPlanner.TryPlan(new LaunchRequest(target, "", false, LaunchTargetKind.BuiltIn), ElevationMode.ElevatedWithStandardShell, Dirs, out _, out _));
     }
 
     [Theory]
@@ -116,7 +116,7 @@ public class LaunchAndPathAdversarialTests
             LaunchTargetKind.Link => "https://example.com",
             _ => "notepad.exe"
         };
-        Assert.True(LaunchPlanner.TryPlan(new LaunchRequest(target, "a", true, kind), true, Dirs, out var plan, out _));
+        Assert.True(LaunchPlanner.TryPlan(new LaunchRequest(target, "a", true, kind), ElevationMode.ElevatedWithStandardShell, Dirs, out var plan, out _));
         Assert.Equal(LaunchIntegrity.DeElevated, plan.Integrity);
         Assert.True(plan.WorkingDirectory is @"C:\Windows\System32" or @"C:\Users\alex", plan.WorkingDirectory);
     }
@@ -205,12 +205,14 @@ public class LaunchAndPathAdversarialTests
     }
 
     [Theory]
-    [InlineData(true, true, false, true, AutoElevateAction.DoNotElevate)]
-    [InlineData(true, false, true, true, AutoElevateAction.DoNotElevate)]
-    [InlineData(false, false, false, true, AutoElevateAction.DoNotElevate)]
-    [InlineData(true, false, false, false, AutoElevateAction.AskBeforeElevating)]
-    [InlineData(true, false, false, true, AutoElevateAction.Elevate)]
-    public void AutoElevate_OnlyElevatesSilentlyWithApprovalOnRecord(bool always, bool elevated, bool noElevate, bool approval, AutoElevateAction expected)
+    [InlineData(true, true, false, SealStatus.Unchanged, AutoElevateAction.DoNotElevate)]
+    [InlineData(true, false, true, SealStatus.Unchanged, AutoElevateAction.DoNotElevate)]
+    [InlineData(false, false, false, SealStatus.Unchanged, AutoElevateAction.DoNotElevate)]
+    [InlineData(true, false, false, SealStatus.NeverApproved, AutoElevateAction.AskBeforeElevating)]
+    [InlineData(true, false, false, SealStatus.Changed, AutoElevateAction.AskBeforeElevating)]
+    [InlineData(true, false, false, SealStatus.Unreadable, AutoElevateAction.AskBeforeElevating)]
+    [InlineData(true, false, false, SealStatus.Unchanged, AutoElevateAction.Elevate)]
+    public void AutoElevate_OnlyElevatesSilentlyWhenTheApprovalMatchesExactly(bool always, bool elevated, bool noElevate, SealStatus approval, AutoElevateAction expected)
     {
         Assert.Equal(expected, AutoElevatePolicy.Decide(always, elevated, noElevate, approval));
     }

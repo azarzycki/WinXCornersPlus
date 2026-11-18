@@ -116,4 +116,27 @@ public sealed class CrashReporterTests : IDisposable
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WinXCornersPlus", "crash.log"),
             CrashReporter.DefaultCrashLogPath());
     }
+
+    /// <summary>Review V2 D1: an elevated process passes no path; it writes no file anywhere and says so in its notification.</summary>
+    [Fact]
+    public void Without_a_path_nothing_is_written_and_the_notification_does_not_mention_crash_log()
+    {
+        var reporter = new CrashReporter(null);
+        var log = new BoundedLog();
+        var notifications = new List<string>();
+        reporter.AttachLog(log);
+        reporter.AttachNotifier(notifications.Add);
+        var before = Directory.GetFiles(_temp.Path, "*", SearchOption.AllDirectories);
+
+        reporter.ReportUiException(new InvalidOperationException("elevated failure"));
+        reporter.ReportFatal(new FormatException("elevated background failure"), isTerminating: false);
+
+        Assert.Null(reporter.CrashLogPath);
+        Assert.Null(reporter.LastCrashLogError);
+        Assert.Equal([CrashReporter.NotificationTextWithoutFile], notifications);
+        Assert.DoesNotContain("crash.log", CrashReporter.NotificationTextWithoutFile, StringComparison.Ordinal);
+        Assert.Equal(2, log.Snapshot().Count(static l => l.Contains("] Unexpected error", StringComparison.Ordinal)));
+        Assert.Equal(before, Directory.GetFiles(_temp.Path, "*", SearchOption.AllDirectories));
+        Assert.Throws<ArgumentException>(() => new CrashReporter("  "));
+    }
 }

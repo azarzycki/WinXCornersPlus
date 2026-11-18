@@ -1,0 +1,19 @@
+# Keeps the SHA-pinned GitHub Actions (ci.yml, ui-tests.yml) and the NuGet packages current: Dependabot opens a pull
+# request with the new commit SHA and version comment, which then runs the full CI before anything is merged.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      test-packages:
+        patterns: ["Microsoft.NET.Test.Sdk", "xunit*", "coverlet*", "Xunit.SkippableFact"]

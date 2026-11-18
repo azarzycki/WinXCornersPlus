@@ -31,8 +31,8 @@ jobs:
       matrix:
         os: [windows-latest, windows-11-arm, ubuntu-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: 10.0.x
       - name: Test
@@ -43,7 +43,7 @@ jobs:
       - name: Coverage gate
         shell: pwsh
         run: ./build/Check-Coverage.ps1 -ResultsDirectory TestResults -MinimumLine 95 -MinimumBranch 90
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: core-test-results-${{ matrix.os }}
@@ -58,9 +58,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-2022, windows-2025, windows-11-arm]
+    env:
+      # Tests append what the runner turned out to be (UAC state, shell elevation, Redirection Guard) to this file;
+      # the Summary step puts it in the job summary.
+      WXC_TEST_FACTS: ${{ github.workspace }}\TestResults\test-facts.txt
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: 10.0.x
       - name: Windows version
@@ -70,6 +74,12 @@ jobs:
           $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')
           $arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
           Write-Host "Windows build $($v.Build) ($v); process architecture: $arch; administrator: $elevated"
+          # User Account Control decides which of the app's three elevation states the tests see (review V2 D4).
+          $uac = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue
+          $line = "UAC: EnableLUA=$($uac.EnableLUA) ConsentPromptBehaviorAdmin=$($uac.ConsentPromptBehaviorAdmin) FilterAdministratorToken=$($uac.FilterAdministratorToken); user $env:USERNAME"
+          Write-Host $line
+          New-Item -ItemType Directory -Force TestResults | Out-Null
+          Add-Content -LiteralPath $env:WXC_TEST_FACTS -Value $line
       - name: Build app (Release, warnings are errors)
         run: dotnet build src/WinXCorners.App/WinXCorners.App.csproj -c Release -warnaserror
       - name: Test
@@ -82,7 +92,7 @@ jobs:
         if: always()
         shell: pwsh
         run: ./build/Write-TestSummary.ps1 -ResultsDirectory TestResults -Title 'Windows app tests (${{ matrix.os }})'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: app-test-results-${{ matrix.os }}

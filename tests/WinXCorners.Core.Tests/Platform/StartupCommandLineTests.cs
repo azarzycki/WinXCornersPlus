@@ -75,4 +75,37 @@ public class StartupCommandLineTests
     {
         Assert.Equal(expected, StartupCommandLine.PointsTo(value, exe));
     }
+
+    /// <summary>
+    /// An unquoted value whose program path contains spaces is never "this executable": Windows may run
+    /// C:\Program.exe for it. It is reported as stale so the user can save it again (quoted).
+    /// </summary>
+    [Theory]
+    [InlineData(Exe, Exe)]
+    [InlineData(Exe + " --no-elevate", Exe)]
+    [InlineData("  " + Exe, Exe)]
+    [InlineData(@"C:\Program Files\App\run.EXE --x y.exe", @"C:\Program Files\App\run.EXE")]
+    public void An_unquoted_value_with_spaces_is_never_this_executable(string value, string exe)
+    {
+        Assert.Equal(RunEntryState.UnquotedWithSpaces, StartupCommandLine.Classify(value, exe));
+        Assert.False(StartupCommandLine.PointsTo(value, exe));
+    }
+
+    [Theory]
+    [InlineData(null, Exe, RunEntryState.None)]
+    [InlineData("  ", Exe, RunEntryState.None)]
+    [InlineData("\"C:\\unterminated.exe", Exe, RunEntryState.Malformed)]
+    [InlineData("\"" + Exe + "\"", Exe, RunEntryState.ThisExecutable)]
+    [InlineData("\"" + Exe + "\" --no-elevate", Exe, RunEntryState.ThisExecutable)]
+    [InlineData(@"C:\Apps\WinXCornersPlus.exe", @"C:\Apps\WinXCornersPlus.exe", RunEntryState.ThisExecutable)]
+    [InlineData(@"C:\Apps\WinXCornersPlus.exe --show-settings", @"c:\apps\winxcornersplus.EXE", RunEntryState.ThisExecutable)]
+    [InlineData(@"C:\Apps\Other.exe", @"C:\Apps\WinXCornersPlus.exe", RunEntryState.OtherProgram)]
+    [InlineData("\"C:\\Users\\x\\Downloads\\WinXCornersPlus.exe\"", Exe, RunEntryState.OtherProgram)]
+    [InlineData("\"" + Exe + "\"", null, RunEntryState.OtherProgram)]
+    [InlineData("\"" + Exe + "\"", "", RunEntryState.OtherProgram)]
+    public void Classify_covers_every_state(string? value, string? exe, RunEntryState expected)
+    {
+        Assert.Equal(expected, StartupCommandLine.Classify(value, exe));
+        Assert.Equal(expected == RunEntryState.ThisExecutable, StartupCommandLine.PointsTo(value, exe));
+    }
 }

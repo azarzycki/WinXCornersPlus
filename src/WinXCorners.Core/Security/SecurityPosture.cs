@@ -18,7 +18,22 @@ public enum RiskSeverity
 public sealed record RiskItem(string Id, RiskSeverity Severity, string Title, string Detail);
 
 /// <summary>Facts the app gathers about the running process.</summary>
-public sealed record SecurityContext(bool IsElevated, InstallLocationAssessment Install, bool StartsWithWindows, string SettingsPath);
+/// <param name="EverythingRunsElevated">
+/// Only meaningful when <paramref name="IsElevated"/>: this sign-in has no normal-rights context (User Account Control
+/// is off, or this is the built-in Administrator account), so even the desktop shell runs as administrator.
+/// </param>
+public sealed record SecurityContext(
+    bool IsElevated,
+    InstallLocationAssessment Install,
+    bool StartsWithWindows,
+    string SettingsPath,
+    bool EverythingRunsElevated = false)
+{
+    /// <summary>The three-state view of <see cref="IsElevated"/> and <see cref="EverythingRunsElevated"/>.</summary>
+    public ElevationMode Elevation => !IsElevated
+        ? ElevationMode.NotElevated
+        : EverythingRunsElevated ? ElevationMode.ElevatedWithoutStandardRights : ElevationMode.ElevatedWithStandardShell;
+}
 
 /// <summary>
 /// All the security text the user sees (brief design point 5), generated from the current facts so it can be
@@ -45,6 +60,9 @@ public static class SecurityPosture
         public const string ElevationSettingsApproval = "elevation-settings-approval";
         public const string ElevationUserWritableInstall = "elevation-user-writable-install";
         public const string ElevationPromptEveryStart = "elevation-prompt-every-start";
+
+        /// <summary>Elevated with no normal-rights context: what the app opens gets administrator rights too.</summary>
+        public const string LaunchesWithAdministratorRights = "launches-with-administrator-rights";
     }
 
     /// <summary>The name <see cref="ForSetting"/> accepts for a custom command's "launch hidden" switch.</summary>
@@ -71,12 +89,17 @@ public static class SecurityPosture
                 : "To stop, exit the app and start it normally.";
             items.Add(new RiskItem(Ids.RunningElevated, RiskSeverity.Caution, "Running as administrator",
                 "This session has administrator rights, so its corner and hotkey actions can control elevated windows. " +
-                "Programs and links it opens still start without administrator rights. " + howToStop));
+                LaunchSentence(context.Elevation) + " " + howToStop));
+        }
+
+        if (context.Elevation == ElevationMode.ElevatedWithoutStandardRights)
+        {
+            items.Add(LaunchesWithAdministratorRights());
         }
 
         if (settings.AlwaysRunAsAdministrator)
         {
-            items.Add(AlwaysRunAsAdministrator(installProtected));
+            items.Add(AlwaysRunAsAdministrator(installProtected, context.Elevation.AfterElevation()));
         }
 
         if (settings.EnableCustomCommands)
@@ -108,7 +131,13 @@ public static class SecurityPosture
     /// What the user agrees to in the consent dialog shown before the app restarts as administrator.
     /// </summary>
     /// <param name="everyStart">True when the consent is for "Always run as administrator" rather than one restart.</param>
-    public static IReadOnlyList<RiskItem> DescribeElevation(ApplicationSettings settings, InstallLocationAssessment install, bool everyStart)
+    /// <param name="elevation">
+    /// The state of the administrator session the consent is about: the running session's own state when it is already
+    /// elevated (the approval at an elevated start), otherwise <see cref="ElevationModes.AfterElevation"/> of the
+    /// current one. It decides whether programs the app opens can be kept from getting administrator rights.
+    /// </param>
+    public static IReadOnlyList<RiskItem> DescribeElevation(ApplicationSettings settings, InstallLocationAssessment install, bool everyStart,
+        ElevationMode elevation = ElevationMode.ElevatedWithStandardShell)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(install);
@@ -118,9 +147,12 @@ public static class SecurityPosture
             new(Ids.ElevationControlsElevatedWindows, RiskSeverity.Caution, "Hotkeys can control elevated windows",
                 $"With administrator rights, the app's {hotkeys} can send keys to windows that run as administrator. " +
                 "That is the reason to elevate, and it is also the risk: whatever the corners are set to do can act on those windows."),
-            new(Ids.ElevationLaunchesWithoutAdmin, RiskSeverity.Info, "Programs it opens do not get admin rights",
-                "Programs, documents and links the app opens still start without administrator rights. " +
-                "A program that needs them shows its own UAC prompt."),
+            elevation == ElevationMode.ElevatedWithoutStandardRights
+                ? LaunchesWithAdministratorRights()
+                : new(Ids.ElevationLaunchesWithoutAdmin, RiskSeverity.Info, "Programs it opens do not get admin rights",
+                    "Programs, documents and links the app opens are started by the Windows desktop without administrator " +
+                    "rights; if that is not possible, they are not opened at all. A program that needs administrator " +
+                    "rights shows its own UAC prompt."),
             new(Ids.ElevationSettingsApproval, RiskSeverity.Info, "Setting changes need your approval",
                 "Any program running under your account can change the settings file. Before an elevated session uses " +
                 "changed corner actions or commands, the app shows you each change and asks you to approve it.")
@@ -160,9 +192,15 @@ public static class SecurityPosture
             context.StartsWithWindows
                 ? "It has one Run entry for your user account only, because Run at startup is on."
                 : "It adds a Run entry for your user account only when Run at startup is on, which it currently is not.",
-            context.IsElevated
-                ? "It is running as administrator. Programs and links it opens start without administrator rights."
-                : "It is running without administrator rights.",
+            context.Elevation switch
+            {
+                ElevationMode.NotElevated => "It is running without administrator rights.",
+                ElevationMode.ElevatedWithoutStandardRights =>
+                    "It is running as administrator on an account where everything runs as administrator, so programs " +
+                    "and links it opens get administrator rights too.",
+                _ => "It is running as administrator. Programs and links it opens are started without administrator " +
+                     "rights by the Windows desktop, or not at all."
+            },
             "This build is not code-signed, so Windows shows \"Unknown publisher\" when it asks about this app."
         ];
     }
@@ -178,7 +216,8 @@ public static class SecurityPosture
         ArgumentNullException.ThrowIfNull(context);
         return settingName switch
         {
-            nameof(ApplicationSettings.AlwaysRunAsAdministrator) => AlwaysRunAsAdministrator(IsProtected(context.Install)),
+            nameof(ApplicationSettings.AlwaysRunAsAdministrator) =>
+                AlwaysRunAsAdministrator(IsProtected(context.Install), context.Elevation.AfterElevation()),
             nameof(ApplicationSettings.EnableCustomCommands) => CustomCommandsEnabled(settings),
             nameof(ApplicationSettings.AlwaysHideTrayIcon) => TrayIconHidden(context.StartsWithWindows),
             LaunchHiddenSetting => CommandLaunchesHidden([]),
@@ -194,16 +233,29 @@ public static class SecurityPosture
             "so they could replace the app's files and get administrator rights next time. Move the app under " +
             "Program Files, or run it without administrator rights.");
 
-    private static RiskItem AlwaysRunAsAdministrator(bool installProtected)
+    private static RiskItem AlwaysRunAsAdministrator(bool installProtected, ElevationMode elevation)
     {
         const string Prompt = "Windows will show a UAC prompt each time the app starts, including at sign-in. Approve it only when you expect it.";
+        var launches = elevation == ElevationMode.ElevatedWithoutStandardRights
+            ? " On this account, programs the app opens get administrator rights too."
+            : " Programs the app opens are started without administrator rights, or not at all.";
         return installProtected
-            ? new RiskItem(Ids.AlwaysRunAsAdministrator, RiskSeverity.Caution, "Always runs as administrator",
-                Prompt + " Programs the app opens still start without administrator rights.")
+            ? new RiskItem(Ids.AlwaysRunAsAdministrator, RiskSeverity.Caution, "Always runs as administrator", Prompt + launches)
             : new RiskItem(Ids.AlwaysRunAsAdministrator, RiskSeverity.Warning, "Always runs as administrator",
                 Prompt + " The app's files are in a folder other programs can change, so approving could give one of them " +
                 "administrator rights. Install under Program Files first.");
     }
+
+    /// <summary>The sentence about what the app starts, for the "Running as administrator" item.</summary>
+    private static string LaunchSentence(ElevationMode elevation) => elevation == ElevationMode.ElevatedWithoutStandardRights
+        ? "On this account everything runs as administrator, so programs and links it opens get administrator rights too."
+        : "Programs and links it opens are started without administrator rights, or not at all.";
+
+    private static RiskItem LaunchesWithAdministratorRights() =>
+        new(Ids.LaunchesWithAdministratorRights, RiskSeverity.Warning, "Programs it opens get administrator rights",
+            "On this account everything runs with administrator rights: User Account Control is off, or this is the " +
+            "built-in Administrator account. So every program, document and link the app opens, including custom " +
+            "commands, gets administrator rights too. Turn User Account Control on to change this.");
 
     private static RiskItem CustomCommandsEnabled(ApplicationSettings settings)
     {

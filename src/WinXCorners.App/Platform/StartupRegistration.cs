@@ -43,6 +43,9 @@ internal sealed class StartupRegistration
     }
 
     /// <summary>The program a Run value of ours starts when it is NOT this executable; null otherwise.</summary>
+    /// <summary>What the Run value says about this executable (an unquoted path with spaces is never "this one").</summary>
+    internal RunEntryState GetEntryState() => StartupCommandLine.Classify(ReadValue(), _executablePath);
+
     internal string? GetStaleEntryPath()
     {
         var value = ReadValue();

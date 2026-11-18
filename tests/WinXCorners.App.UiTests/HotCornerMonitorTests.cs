@@ -1,6 +1,7 @@
 using WinXCorners.App.UiTests.Infrastructure;
 using WinXCorners.Core.Actions;
 using WinXCorners.Core.Diagnostics;
+using WinXCorners.Core.HotCorners;
 using WinXCorners.Core.Model;
 
 namespace WinXCorners.App.UiTests;
@@ -61,16 +62,75 @@ public sealed class HotCornerMonitorTests
         Assert.Empty(rig.Triggered);
     }
 
+    /// <summary>
+    /// Review V2 D2: GetCursorPos fails on the lock screen and the UAC secure desktop. The old code read that as (0,0),
+    /// the top-left corner, and ran its action once per lock. A failed read must never trigger anything.
+    /// </summary>
+    [Fact]
+    public void A_pointer_that_cannot_be_read_never_triggers()
+    {
+        var rig = new Rig();
+        rig.Visit(Centre, 3);
+        rig.Unavailable(40);
+        rig.Unavailable(40);
+        Assert.Empty(rig.Triggered);
+        Assert.Contains(rig.Log.Snapshot(), static l => l.Contains("Hot corners paused", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Another_desktop_having_the_input_never_triggers()
+    {
+        var rig = new Rig { InputDesktopIsOurs = false };
+        rig.Visit(Centre, 3);
+        rig.Visit(TopLeft, 40);
+        Assert.Empty(rig.Triggered);
+    }
+
+    [Fact]
+    public void Lock_then_unlock_with_the_pointer_parked_in_a_corner_fires_only_after_it_leaves_and_returns()
+    {
+        var rig = new Rig();
+        rig.Visit(Centre, 3);
+        rig.Monitor.OnSessionChange(SessionChange.SessionLock);
+        rig.Visit(TopLeft, 40);
+        Assert.Empty(rig.Triggered);
+
+        rig.Monitor.OnSessionChange(SessionChange.SessionUnlock);
+        rig.Visit(TopLeft, 40);
+        Assert.Empty(rig.Triggered);
+        Assert.Contains(rig.Log.Snapshot(), static l => l.Contains("Hot corners resumed", StringComparison.Ordinal));
+
+        rig.Visit(Centre, 3);
+        rig.Visit(TopLeft, 20);
+        Assert.Equal([ActionIds.FileExplorer], rig.Triggered);
+    }
+
+    [Fact]
+    public void A_countdown_in_progress_is_hidden_when_the_session_locks()
+    {
+        var rig = new Rig();
+        rig.Settings.TopLeftDelayEnabled = true;
+        rig.Settings.TopLeftDelayIndex = 3;
+        rig.Settings.ShowCountdown = true;
+        rig.Visit(Centre, 3);
+        rig.Visit(TopLeft, 5);
+        Assert.True(rig.Countdowns > 0);
+
+        rig.Monitor.OnSessionChange(SessionChange.SessionLock);
+        Assert.True(rig.Hides > 0, "The countdown badge stayed up over the lock screen.");
+        rig.Visit(TopLeft, 200);
+        Assert.Empty(rig.Triggered);
+    }
+
     private sealed class Rig
     {
-        private readonly HotCornerMonitor _monitor;
-        private Point _cursor = Centre;
+        private Point? _cursor = Centre;
         private long _clock = 1_000;
 
         internal Rig()
         {
             Settings = new ApplicationSettings { IgnoreFullScreen = false };
-            _monitor = new HotCornerMonitor(
+            Monitor = new HotCornerMonitor(
                 () => Settings,
                 () => _cursor,
                 static _ => Screen,
@@ -79,13 +139,21 @@ public sealed class HotCornerMonitorTests
                 () => _clock,
                 () => Suppressed,
                 static () => false,
-                new BoundedLog());
+                Log,
+                () => InputDesktopIsOurs);
+            var _monitor = Monitor;
             _monitor.ActionTriggered += Triggered.Add;
             _monitor.CountdownRequested += (_, _, _) => Countdowns++;
             _monitor.CountdownHidden += () => Hides++;
         }
 
         internal ApplicationSettings Settings { get; }
+
+        internal HotCornerMonitor Monitor { get; }
+
+        internal BoundedLog Log { get; } = new();
+
+        internal bool InputDesktopIsOurs { get; set; } = true;
 
         internal bool Suppressed { get; set; }
 
@@ -99,9 +167,21 @@ public sealed class HotCornerMonitorTests
         internal void Visit(Point point, int ticks)
         {
             _cursor = point;
+            Tick(ticks);
+        }
+
+        /// <summary>GetCursorPos fails for <paramref name="ticks"/> ticks (lock screen, UAC prompt).</summary>
+        internal void Unavailable(int ticks)
+        {
+            _cursor = null;
+            Tick(ticks);
+        }
+
+        private void Tick(int ticks)
+        {
             for (var i = 0; i < ticks; i++)
             {
-                _monitor.Evaluate();
+                Monitor.Evaluate();
                 _clock += 50;
             }
         }

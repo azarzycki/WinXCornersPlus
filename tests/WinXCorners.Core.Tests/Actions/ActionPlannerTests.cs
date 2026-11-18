@@ -122,7 +122,7 @@ public class ActionPlannerTests
         foreach (var id in new[] { ActionIds.FileExplorer, ActionIds.TaskManager, ActionIds.Settings })
         {
             var launch = Assert.IsType<ActionPlan.Launch>(Plan(id));
-            Assert.True(LaunchPlanner.TryPlan(launch.Request, appIsElevated: true, Dirs, out _, out var error), error);
+            Assert.True(LaunchPlanner.TryPlan(launch.Request, ElevationMode.ElevatedWithStandardShell, Dirs, out _, out var error), error);
         }
     }
 
