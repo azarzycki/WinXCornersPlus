@@ -56,7 +56,7 @@
     <Property Id="ARPURLINFOABOUT" Value="$(var.ProjectUrl)" />
     <Property Id="ARPHELPLINK" Value="$(var.ProjectUrl)/issues" />
     <Property Id="ARPURLUPDATEINFO" Value="$(var.ProjectUrl)/releases" />
-    <Property Id="ARPNOMODIFY" Value="1" />
+    <!-- ARPNOMODIFY (one feature, nothing to modify) is set by WixUI_Minimal below. -->
 
     <!--
       Prerequisite: the app is framework-dependent. WiX's NetCoreCheck asks the .NET host whether the
