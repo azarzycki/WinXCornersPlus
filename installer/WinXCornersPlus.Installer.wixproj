@@ -20,8 +20,13 @@
     <ProjectUrl Condition="'$(ProjectUrl)' == ''">https://github.com/Asteski/WinXCornersPlus</ProjectUrl>
     <DotNetCheckVersion Condition="'$(DotNetCheckVersion)' == ''">10.0.0</DotNetCheckVersion>
     <DefineConstants>ProductVersion=$(ProductVersion);PayloadDir=$(PayloadDir);ProjectUrl=$(ProjectUrl);DotNetCheckVersion=$(DotNetCheckVersion);IconFile=$(MSBuildThisFileDirectory)..\assets\app.ico</DefineConstants>
-    <!-- ICE61: AllowSameVersionUpgrades is deliberate, so a final release replaces its release candidate in place. -->
-    <SuppressIces>ICE61</SuppressIces>
+    <!--
+      ICE61: AllowSameVersionUpgrades is deliberate, so a final release replaces its release candidate in place.
+      ICE43/ICE57: they assume ProgramMenuFolder may be per-user and want an HKCU key path for the shortcut. The
+      package is always per-machine (ALLUSERS=1, Scope="perMachine"), so the shortcut goes to the all-users Start
+      menu and belongs with the exe; an HKCU key path would write into the installing user's profile for nothing.
+    -->
+    <SuppressIces>ICE61;ICE43;ICE57</SuppressIces>
   </PropertyGroup>
 
   <ItemGroup>
