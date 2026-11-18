@@ -532,7 +532,8 @@ public sealed class AppHostTests : IDisposable
         var decision = host.PlanRestart(RestartMode.SameRights);
         Assert.Equal(RestartPolicy.RestartWithoutAdministratorMenuText, RestartPolicy.MenuText(decision));
         Assert.True(host.TryRestart(RestartMode.SameRights, out _));
-        Assert.Contains(RestartPolicy.StartedText(decision), host.Log.Snapshot());
+        var expected = RestartPolicy.StartedText(decision);
+        Assert.Contains(host.Log.Snapshot(), line => line.EndsWith(expected, StringComparison.Ordinal));
     }
 
     [Fact]
