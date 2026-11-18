@@ -1,4 +1,5 @@
 using System.Globalization;
+using WinXCorners.Core.Input;
 using WinXCorners.Core.Model;
 
 namespace WinXCorners.Core.Security;
@@ -64,9 +65,13 @@ public static class SecurityPosture
 
         if (context.IsElevated)
         {
+            // With "Always run as administrator" on, a normal start elevates again, so that switch has to go first.
+            var howToStop = settings.AlwaysRunAsAdministrator
+                ? "To stop, turn off Always run as administrator, then exit the app and start it again."
+                : "To stop, exit the app and start it normally.";
             items.Add(new RiskItem(Ids.RunningElevated, RiskSeverity.Caution, "Running as administrator",
                 "This session has administrator rights, so its corner and hotkey actions can control elevated windows. " +
-                "Programs and links it opens still start without administrator rights. To stop, exit the app and start it normally."));
+                "Programs and links it opens still start without administrator rights. " + howToStop));
         }
 
         if (settings.AlwaysRunAsAdministrator)
@@ -242,11 +247,16 @@ public static class SecurityPosture
             " To get back to Settings, start WinXCornersPlus again; the running copy opens its Settings window.");
     }
 
+    /// <summary>
+    /// Slots whose hidden-window switch matters: only valid commands that launch a program. Hotkey and conditional
+    /// commands open no window, so "starts with no window" would be false for them.
+    /// </summary>
     private static List<int> HiddenCommandSlots(ApplicationSettings settings)
     {
         var commands = settings.CustomCommands ?? [];
         return Enumerable.Range(0, Math.Min(commands.Length, ApplicationSettings.CustomCommandCount))
-            .Where(index => commands[index] is { LaunchHidden: true } command && !string.IsNullOrWhiteSpace(command.Command))
+            .Where(index => commands[index] is { LaunchHidden: true } command &&
+                            CustomCommandAnalyzer.Analyze(command.Command) is { IsValid: true, Kind: CustomCommandKind.Launch })
             .ToList();
     }
 

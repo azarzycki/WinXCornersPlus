@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.Text;
 using WinXCorners.Core.Actions;
@@ -19,6 +20,9 @@ public static class SettingsSanitizer
 
     /// <summary>Longest custom command parameter string kept; longer values are truncated.</summary>
     public const int MaxParametersLength = 4096;
+
+    private static readonly SearchValues<char> BidirectionalControls = SearchValues.Create(
+        "\u061C\u200E\u200F\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069");
 
     // Corrections quote the offending value; keep that short so a hostile file cannot flood a log or dialog.
     private const int MaxQuotedValueLength = 40;
@@ -121,6 +125,8 @@ public static class SettingsSanitizer
                 continue;
             }
 
+            // Control characters, bidirectional controls and unpaired surrogates are removed from all three: none
+            // can be typed meaningfully, and each can make a value read differently from what it is.
             command.Name = SanitizeText(command.Name, MaxNameLength, trim: true, $"{label}.Name", corrections);
             command.Command = SanitizeText(command.Command, MaxCommandLength, trim: false, $"{label}.Command", corrections);
             command.Parameters = SanitizeText(command.Parameters, MaxParametersLength, trim: false, $"{label}.Parameters", corrections);
@@ -139,6 +145,18 @@ public static class SettingsSanitizer
         if (result.Length != value.Length)
         {
             corrections.Add($"{label}: removed {value.Length - result.Length} control character(s).");
+        }
+
+        var withoutBidi = RemoveBidirectionalControls(result);
+        if (withoutBidi.Length != result.Length)
+        {
+            corrections.Add($"{label}: removed {result.Length - withoutBidi.Length} bidirectional control character(s).");
+        }
+
+        result = RemoveUnpairedSurrogates(withoutBidi);
+        if (result.Length != withoutBidi.Length)
+        {
+            corrections.Add($"{label}: removed {withoutBidi.Length - result.Length} unpaired surrogate(s).");
         }
 
         if (trim)
@@ -184,6 +202,43 @@ public static class SettingsSanitizer
         }
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// Removes the Unicode bidirectional controls (ALM U+061C, LRM U+200E, RLM U+200F, LRE/RLE/PDF/LRO/RLO
+    /// U+202A-U+202E, LRI/RLI/FSI/PDI U+2066-U+2069). They have no place in a name or command line and exist only
+    /// to make text read differently from what it is.
+    /// </summary>
+    private static string RemoveBidirectionalControls(string value)
+    {
+        return value.AsSpan().IndexOfAny(BidirectionalControls) < 0
+            ? value
+            : string.Concat(value.Where(static c => !BidirectionalControls.Contains(c)));
+    }
+
+    /// <summary>
+    /// Removes UTF-16 surrogates that are not part of a pair. They encode no character, cannot be stored as UTF-8,
+    /// and a string containing one can look identical to a different string.
+    /// </summary>
+    private static string RemoveUnpairedSurrogates(string value)
+    {
+        StringBuilder? builder = null;
+        for (var i = 0; i < value.Length; i++)
+        {
+            var c = value[i];
+            var unpaired = (char.IsHighSurrogate(c) && !(i + 1 < value.Length && char.IsLowSurrogate(value[i + 1]))) ||
+                           (char.IsLowSurrogate(c) && !(i > 0 && char.IsHighSurrogate(value[i - 1])));
+            if (unpaired)
+            {
+                builder ??= new StringBuilder(value, 0, i, value.Length);
+            }
+            else
+            {
+                builder?.Append(c);
+            }
+        }
+
+        return builder?.ToString() ?? value;
     }
 
     /// <summary>Cuts to at most <paramref name="maxLength"/> UTF-16 units without splitting a surrogate pair.</summary>

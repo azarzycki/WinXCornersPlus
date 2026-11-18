@@ -174,11 +174,13 @@ public static class VirtualKeys
     private static readonly FrozenSet<string> MouseButtonNames =
         new[] { "LBUTTON", "RBUTTON", "MBUTTON", "XBUTTON1", "XBUTTON2" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
-    // Keys whose scan code is prefixed with 0xE0 on a real keyboard. Without KEYEVENTF_EXTENDEDKEY,
+    // Keys whose scan code is prefixed with 0xE0 on a real keyboard (BREAK, i.e. VK_CANCEL, too: Microsoft
+    // lists it among the extended keys). Without KEYEVENTF_EXTENDEDKEY,
     // Windows treats e.g. HOME as numpad 7 when NumLock is off, and RCONTROL as LCONTROL.
     private static readonly FrozenSet<ushort> ExtendedKeys = new ushort[]
     {
         VkRControl, VkRMenu,
+        0x03,                               // CANCEL (BREAK)
         0x2D, 0x2E, 0x24, 0x23, 0x21, 0x22, // INSERT, DELETE, HOME, END, PRIOR, NEXT
         0x25, 0x26, 0x27, 0x28,             // arrows
         0x90, 0x2C, 0x6F,                   // NUMLOCK, SNAPSHOT, DIVIDE
@@ -207,11 +209,13 @@ public static class VirtualKeys
 
         if (name.Length == 1)
         {
-            var character = char.ToUpperInvariant(name[0]);
-            // VK codes for letters and digits equal their upper-case ASCII values.
-            if (character is >= 'A' and <= 'Z' or >= '0' and <= '9')
+            // ASCII only: char.ToUpperInvariant maps some non-ASCII letters onto ASCII ones (U+017F LONG S
+            // becomes 'S'), which would accept look-alikes as keys.
+            var character = name[0];
+            if (char.IsAsciiLetterOrDigit(character))
             {
-                virtualKey = character;
+                // VK codes for letters and digits equal their upper-case ASCII values.
+                virtualKey = char.ToUpperInvariant(character);
                 return true;
             }
         }

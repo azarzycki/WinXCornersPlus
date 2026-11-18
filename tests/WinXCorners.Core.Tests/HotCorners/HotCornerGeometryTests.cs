@@ -95,7 +95,9 @@ public class HotCornerGeometryTests
     [InlineData(HotCornerArea.TopLeft, 31, 31, true)]
     [InlineData(HotCornerArea.TopLeft, 32, 0, false)]
     [InlineData(HotCornerArea.TopLeft, 0, 32, false)]
-    [InlineData(HotCornerArea.TopLeft, -50, -50, true)]
+    [InlineData(HotCornerArea.TopLeft, -50, -50, false)]
+    [InlineData(HotCornerArea.TopLeft, -1, 0, false)]
+    [InlineData(HotCornerArea.TopLeft, 0, -1, false)]
     [InlineData(HotCornerArea.TopRight, 1888, 31, true)]
     [InlineData(HotCornerArea.TopRight, 1887, 0, false)]
     [InlineData(HotCornerArea.TopRight, 1919, 32, false)]
@@ -105,7 +107,9 @@ public class HotCornerGeometryTests
     [InlineData(HotCornerArea.BottomRight, 1888, 1048, true)]
     [InlineData(HotCornerArea.BottomRight, 1887, 1079, false)]
     [InlineData(HotCornerArea.BottomRight, 1919, 1047, false)]
-    [InlineData(HotCornerArea.BottomRight, 2500, 1500, true)]
+    [InlineData(HotCornerArea.BottomRight, 2500, 1500, false)]
+    [InlineData(HotCornerArea.BottomRight, 1920, 1079, false)]
+    [InlineData(HotCornerArea.BottomRight, 1919, 1080, false)]
     [InlineData(HotCornerArea.None, 0, 0, false)]
     public void IsWithinReleaseZone_PrimaryBoundaries(HotCornerArea area, int x, int y, bool expected)
     {
@@ -124,6 +128,20 @@ public class HotCornerGeometryTests
     public void IsWithinReleaseZone_NegativeOriginSecondary(HotCornerArea area, int x, int y, bool expected)
     {
         Assert.Equal(expected, HotCornerGeometry.IsWithinReleaseZone(new Point(x, y), area, Secondary));
+    }
+
+    /// <summary>
+    /// Two monitors side by side: once the pointer has crossed onto the right-hand monitor, the left monitor's
+    /// top-right release zone no longer holds it, so the right monitor's top-left corner is not blocked.
+    /// </summary>
+    [Fact]
+    public void IsWithinReleaseZone_EndsAtTheScreenEdgeSoTheNeighbouringMonitorIsOutside()
+    {
+        var left = new Rectangle(-1920, 0, 1920, 1080);
+        Assert.True(HotCornerGeometry.IsWithinReleaseZone(new Point(-1, 0), HotCornerArea.TopRight, left));
+        Assert.False(HotCornerGeometry.IsWithinReleaseZone(new Point(0, 0), HotCornerArea.TopRight, left));
+        Assert.False(HotCornerGeometry.IsWithinReleaseZone(new Point(5, 5), HotCornerArea.TopRight, left));
+        Assert.False(HotCornerGeometry.IsWithinReleaseZone(new Point(int.MaxValue, int.MinValue), HotCornerArea.TopRight, left));
     }
 
     [Fact]

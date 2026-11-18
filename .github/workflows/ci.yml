@@ -12,7 +12,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Inside a called workflow github.workflow is the caller's name, so the standalone run and the release gate's
+  # copy of this workflow do not cancel each other.
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -23,6 +25,7 @@ jobs:
   core:
     name: Core tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -47,9 +50,10 @@ jobs:
           path: TestResults
           if-no-files-found: warn
 
-  app:
-    name: Windows app build (${{ matrix.os }})
+  app-tests:
+    name: Windows app tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -59,5 +63,27 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-      - name: Build
-        run: dotnet build src/WinXCorners.App/WinXCorners.App.csproj -c Release
+      - name: Windows version
+        shell: pwsh
+        run: |
+          $v = [Environment]::OSVersion.Version
+          $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')
+          Write-Host "Windows build $($v.Build) ($v); administrator: $elevated"
+      - name: Build app (Release, warnings are errors)
+        run: dotnet build src/WinXCorners.App/WinXCorners.App.csproj -c Release -warnaserror
+      - name: Test
+        run: >
+          dotnet test tests/WinXCorners.App.Tests/WinXCorners.App.Tests.csproj -c Release -warnaserror
+          --collect:"XPlat Code Coverage" --settings tests/WinXCorners.App.Tests/coverage.runsettings
+          --results-directory TestResults --logger "trx;LogFileName=app.trx"
+          --logger "console;verbosity=normal" --blame-hang-timeout 5m
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: ./build/Write-TestSummary.ps1 -ResultsDirectory TestResults -Title 'Windows app tests (${{ matrix.os }})'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: app-test-results-${{ matrix.os }}
+          path: TestResults
+          if-no-files-found: warn

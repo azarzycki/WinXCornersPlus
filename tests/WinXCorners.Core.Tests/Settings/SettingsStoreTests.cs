@@ -497,6 +497,44 @@ public sealed class SettingsStoreTests : IDisposable
         Assert.False(second.Written);
     }
 
+    /// <summary>
+    /// The no-op shortcut compares with the bytes on disk, not with what this store last wrote: an external edit
+    /// of the same length (one flipped flag) must still be overwritten.
+    /// </summary>
+    [Fact]
+    public void Save_AfterAnExternalEditOfTheSameLength_RewritesTheFile()
+    {
+        var store = CreateStore();
+        store.Load();
+        var mine = ApplicationSettings.CreateDefault();
+        Assert.True(store.Save(mine).Written);
+        var original = File.ReadAllText(PrimaryPath);
+        var edited = original.Replace("\"EnableCustomCommands\": false", "\"EnableCustomCommands\": true ", StringComparison.Ordinal);
+        Assert.NotEqual(original, edited);
+        Assert.Equal(original.Length, edited.Length);
+        File.WriteAllText(PrimaryPath, edited);
+
+        var result = store.Save(mine);
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.Written);
+        Assert.Equal(original, File.ReadAllText(PrimaryPath));
+    }
+
+    [Fact]
+    public void Save_AfterTheFileWasDeleted_WritesItAgain()
+    {
+        var store = CreateStore();
+        var settings = new ApplicationSettings { ShowCountdown = true };
+        Assert.True(store.Save(settings).Written);
+        File.Delete(PrimaryPath);
+
+        var result = store.Save(settings);
+
+        Assert.True(result.Written);
+        Assert.True(CreateStore().Load().Settings.ShowCountdown);
+    }
+
     [Fact]
     public void Save_AfterLoadingAFileThatNeededCorrections_WritesTheCorrectedVersion()
     {
