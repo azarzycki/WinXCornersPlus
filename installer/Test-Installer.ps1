@@ -173,7 +173,7 @@ try {
     $expectedFiles = @(Get-ChildItem -LiteralPath $PayloadDirectory -Recurse -File | ForEach-Object { [System.IO.Path]::GetRelativePath((Resolve-Path $PayloadDirectory).Path, $_.FullName) } | Sort-Object)
     $installedFiles = if (Test-Path -LiteralPath $installDir) { @(Get-ChildItem -LiteralPath $installDir -Recurse -File | ForEach-Object { [System.IO.Path]::GetRelativePath($installDir, $_.FullName) } | Sort-Object) } else { @() }
     Add-Result '1 install' "files in $installDir" (($installedFiles -join '|') -ceq ($expectedFiles -join '|')) ($installedFiles -join ', ')
-    foreach ($required in 'WinXCornersPlus.exe', 'WinXCornersPlus.dll', 'WinXCorners.Core.dll', 'WinXCornersPlus.runtimeconfig.json', 'WinXCornersPlus.deps.json', 'LICENSE.txt') {
+    foreach ($required in 'WinXCornersPlus.exe', 'WinXCornersPlus.dll', 'WinXCornersPlus.Core.dll', 'WinXCornersPlus.runtimeconfig.json', 'WinXCornersPlus.deps.json', 'LICENSE.txt') {
         Add-Result '1 install' "$required installed" ($required -in $installedFiles)
     }
     if (Test-Path -LiteralPath $installedExe) {
@@ -238,6 +238,7 @@ try {
     $app = Start-AppAsStandardUser '4 upgrade'
     $run = Invoke-Msiexec '4-upgrade' @('/i', "`"$UpgradeMsi`"")
     Add-Result '4 upgrade' 'upgrade exits with 0 (no reboot: not 3010)' ($run.ExitCode -eq 0) "exit code $($run.ExitCode)"
+    Add-Result '4 upgrade' 'no file had to be replaced in use (no ReplacedInUseFiles in the log)' (-not ($run.Text -match 'ReplacedInUseFiles'))
     $arp = @(Get-ArpEntries)
     Add-Result '4 upgrade' 'exactly one Add/Remove Programs entry' ($arp.Count -eq 1) "$($arp.Count) entries"
     Add-Result '4 upgrade' 'entry has the new version' ($arp.Count -eq 1 -and (Get-Value $arp[0] 'DisplayVersion') -eq $UpgradeProductVersion) `
@@ -245,6 +246,8 @@ try {
     if ($app) {
         $code = Wait-Exit $app 5
         Add-Result '4 upgrade' 'the running old copy is gone' ($null -ne $code) "exit code: $code"
+        # The app runs as another user than msiexec here, so the close messages from the installer's custom-action
+        # host may not reach its windows and the fallback ends it; step 3 shows that the messages themselves work.
         Add-Info '4 upgrade' 'how it was closed' $(if ($code -eq 0) { 'clean exit on WM_ENDSESSION (exit code 0)' } elseif ($code -eq 1) { 'terminated by the CloseApplication fallback (exit code 1)' } else { "exit code $code" })
         if ($null -eq $code) { $app.Kill($true) }
     }
@@ -275,6 +278,7 @@ try {
     $app = Start-AppAsStandardUser '6 uninstall'
     $run = Invoke-Msiexec '6-uninstall' @('/x', "`"$UpgradeMsi`"")
     Add-Result '6 uninstall' 'uninstall exits with 0 (no reboot: not 3010)' ($run.ExitCode -eq 0) "exit code $($run.ExitCode)"
+    Add-Result '6 uninstall' 'no file was in use at removal (no ReplacedInUseFiles in the log)' (-not ($run.Text -match 'ReplacedInUseFiles'))
     if ($app) {
         $code = Wait-Exit $app 5
         Add-Result '6 uninstall' 'the running copy is gone' ($null -ne $code) "exit code: $code"
