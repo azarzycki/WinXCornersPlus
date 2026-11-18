@@ -156,6 +156,30 @@ public sealed class AdvancedFormTests
     }
 
     [Fact]
+    public void InitialFocus_IsOnTheSettings_AndEnterPressesOk()
+    {
+        using var host = new FakeAppHost();
+        var changes = 0;
+        host.Settings.Changed += _ => changes++;
+
+        Ui.Run(() =>
+        {
+            var form = Open(host, new Recorder());
+            // Regression: the "Check for updates" link came first in the Tab order and took the initial focus.
+            Assert.NotNull(form.ActiveControl);
+            Assert.IsNotType<LinkLabel>(form.ActiveControl);
+            Assert.Equal("topLeftDelayCheckBox", form.ActiveControl.Name);
+
+            Find.Control<CheckBox>(form, "showCountdownCheckBox").Checked = true;
+            Ui.PressKey(form.ActiveControl, Keys.Enter);
+            Ui.Pump(50);
+            Assert.True(form.IsDisposed, "Enter should press OK.");
+            Assert.Equal(1, changes);
+            Assert.Empty(host.OpenedLinks);
+        });
+    }
+
+    [Fact]
     public void OutOfRangeValues_DoNotThrow_AndShowClamped()
     {
         using var host = new FakeAppHost();
@@ -302,6 +326,15 @@ public sealed class AdvancedFormTests
             Ui.Pump(50);
             LayoutAssert.IsSound(form);
             Screenshot.Capture(form, $"settings-{tab}-{theme.ToString().ToLowerInvariant()}");
+
+            if (theme == Theme.Dark)
+            {
+                // Regression: in dark mode the default button (OK) was drawn like the others.
+                var ok = Find.Control<Button>(form, "okButton");
+                using var bitmap = new Bitmap(ok.Width, ok.Height);
+                ok.DrawToBitmap(bitmap, new Rectangle(Point.Empty, ok.Size));
+                Assert.Equal(ThemeHelper.Colors.GetAccentColor().ToArgb(), bitmap.GetPixel(ok.Width / 2, 0).ToArgb());
+            }
         });
     }
 

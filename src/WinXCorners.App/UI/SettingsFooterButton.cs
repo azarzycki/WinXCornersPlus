@@ -25,7 +25,8 @@ internal sealed class SettingsFooterButton : Button
     /// </summary>
     private bool ShowsAsDefault =>
         IsDefault ||
-        (FindForm() is { } form && ReferenceEquals(form.AcceptButton, this) && form.ActiveControl is not IButtonControl);
+        (FindForm() is { } form && ReferenceEquals(form.AcceptButton, this) &&
+         !(form.ActiveControl is Button other && !ReferenceEquals(other, this) && other.Focused));
 
     protected override void OnPaint(PaintEventArgs e)
     {

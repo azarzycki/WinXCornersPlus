@@ -28,7 +28,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2022, windows-2025]
+        # windows-11-arm: the free hosted Windows 11 ARM64 runner, the closest to what users run (the others are Windows Server).
+        os: [windows-2022, windows-2025, windows-11-arm]
     env:
       UI_SCREENSHOT_DIR: ${{ github.workspace }}\TestResults\screenshots
     steps:

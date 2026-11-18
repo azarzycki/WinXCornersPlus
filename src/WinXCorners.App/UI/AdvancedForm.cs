@@ -217,10 +217,9 @@ internal sealed class AdvancedForm : Form
         _cbBottomRightDelay = CreateDelayCombo("bottomRightDelayComboBox", new Point(DelayPanelRightComboX, DelayPanelSecondRowY - 3));
         _chkShowCountdown = CreateCheckBox("showCountdownCheckBox", "Show Countdown", new Point(16, DelayPanelFooterRowY));
 
+        // Reading (and Tab) order: the corner rows, then the global delay below them, then the countdown.
         _delayPanel.Controls.AddRange(
         [
-            _chkGlobalDelay,
-            _cbGlobalDelay,
             _chkTopLeftDelay,
             _cbTopLeftDelay,
             _chkTopRightDelay,
@@ -229,6 +228,8 @@ internal sealed class AdvancedForm : Form
             _cbBottomLeftDelay,
             _chkBottomRightDelay,
             _cbBottomRightDelay,
+            _chkGlobalDelay,
+            _cbGlobalDelay,
             _chkShowCountdown
         ]);
 
@@ -333,7 +334,10 @@ internal sealed class AdvancedForm : Form
 
         AcceptButton = btnOk;
         CancelButton = btnCancel;
-        Controls.AddRange([updatesLink, securityLink, btnOk, _btnApply, btnCancel, topTabsHost, topSectionHost, tabsHost, customPanel]);
+        // Added in reading order, which is also the Tab order: the settings first, then the footer links and buttons
+        // (Apply, OK, Cancel as they appear). With the links first, a link got the initial focus and Enter opened the
+        // browser instead of pressing OK.
+        Controls.AddRange([topTabsHost, topSectionHost, tabsHost, customPanel, updatesLink, securityLink, _btnApply, btnOk, btnCancel]);
 
         _scaling = new UiScaling(this);
         _scaling.Apply();
