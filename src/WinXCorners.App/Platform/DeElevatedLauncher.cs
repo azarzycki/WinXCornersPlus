@@ -74,7 +74,8 @@ internal static class DeElevatedLauncher
 
             if (hr != 0 || desktopDispatch is null)
             {
-                error = "The desktop shell (explorer.exe) is not running, so the program cannot be started without administrator rights.";
+                error = "The desktop shell (explorer.exe) is not running or has not registered the desktop " +
+                        $"(0x{hr:X8}), so the program cannot be started without administrator rights.";
                 return false;
             }
 

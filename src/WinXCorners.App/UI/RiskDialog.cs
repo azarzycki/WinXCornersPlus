@@ -239,12 +239,15 @@ internal sealed class ConsentForm : Form
         DialogLayout.AddRow(root, buttonRow, new Padding(0, Px(8), 0, 0));
         buttonRow.Anchor = AnchorStyles.Right | AnchorStyles.Top;
 
+        // The layout must be part of the form before a control in it can become the active control: setting
+        // ActiveControl first threw "Invisible or disabled control cannot be activated", which crashed every
+        // consent dialog, including the elevated-start approval (found by the Windows CI smoke test).
+        Controls.Add(root);
+
         // Consent must be a deliberate click: Enter and Esc both mean "cancel".
         AcceptButton = _cancelButton;
         CancelButton = _cancelButton;
         ActiveControl = _cancelButton;
-
-        Controls.Add(root);
         ResumeLayout(true);
     }
 
