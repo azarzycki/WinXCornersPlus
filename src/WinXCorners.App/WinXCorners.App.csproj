@@ -7,10 +7,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>WinXCornersPlus</AssemblyName>
-    <Version>1.4.0</Version>
-    <AssemblyVersion>1.4.0.0</AssemblyVersion>
-    <FileVersion>1.4.0.0</FileVersion>
-    <InformationalVersion>1.4.0</InformationalVersion>
+    <Version>1.5.0</Version>
     <Company>Asteski</Company>
     <Product>WinXCornersPlus</Product>
     <Title>WinXCornersPlus</Title>
@@ -21,20 +18,24 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\WinXCorners.Core\WinXCorners.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Lets the Windows-only test project exercise the internal platform layer. -->
+    <InternalsVisibleTo Include="WinXCorners.App.Tests" />
+    <InternalsVisibleTo Include="WinXCorners.App.UiTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Remove="..\..\assets\app.ico" />
     <None Remove="..\..\assets\about.ico" />
     <None Remove="..\..\assets\tray\*.ico" />
     <!-- WinXCorners_Icon3.ico removed; using WinXCornersPlus.ico from assets instead -->
-    <None Remove="..\..\ICON_1.res" />
-    <None Remove="..\..\ICON_2.res" />
-    <None Remove="..\..\ICON_3.res" />
     <Content Remove="..\..\assets\app.ico" />
     <Content Remove="..\..\assets\about.ico" />
     <Content Remove="..\..\assets\tray\*.ico" />
     <!-- Content Remove for old icon removed -->
-    <Content Remove="..\..\ICON_1.res" />
-    <Content Remove="..\..\ICON_2.res" />
-    <Content Remove="..\..\ICON_3.res" />
     <EmbeddedResource Include="..\..\assets\app.ico" LogicalName="Icons.app.ico" />
     <EmbeddedResource Include="..\..\assets\about.ico" LogicalName="Icons.about.ico" />
     <EmbeddedResource Include="..\..\assets\tray\ICON_dark_disabled.ico" LogicalName="Icons.tray.ICON_dark_disabled.ico" />

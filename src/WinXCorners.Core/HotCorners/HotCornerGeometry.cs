@@ -59,10 +59,11 @@ public static class HotCornerGeometry
     }
 
     /// <summary>
-    /// True while <paramref name="cursor"/> is still inside the release zone of a corner that has fired.
-    /// As in the original, the zone is open towards the outside of the screen (a pointer that has moved
-    /// past the edge, e.g. onto a neighbouring monitor, counts as inside), so only moving back into the
-    /// screen re-arms the corner. Empty bounds or <see cref="HotCornerArea.None"/> -> false.
+    /// True while <paramref name="cursor"/> is still inside the release zone of a corner that has fired:
+    /// the <paramref name="zone"/> x <paramref name="zone"/> square in that corner of <paramref name="bounds"/>.
+    /// The zone ends at the screen edge. A pointer that has moved past it (on a multi-monitor setup, onto the
+    /// neighbouring monitor) is outside, so that monitor's own adjacent corner is not blocked by this one.
+    /// Empty bounds or <see cref="HotCornerArea.None"/> -> false.
     /// </summary>
     public static bool IsWithinReleaseZone(Point cursor, HotCornerArea area, Rectangle bounds, int zone = RearmReleaseSize)
     {
@@ -73,6 +74,11 @@ public static class HotCornerGeometry
 
         long x = cursor.X;
         long y = cursor.Y;
+        if (x < bounds.Left || x >= (long)bounds.Right || y < bounds.Top || y >= (long)bounds.Bottom)
+        {
+            return false;
+        }
+
         var nearLeft = x <= (long)bounds.Left + zone - 1;
         var nearRight = x >= (long)bounds.Right - zone;
         var nearTop = y <= (long)bounds.Top + zone - 1;

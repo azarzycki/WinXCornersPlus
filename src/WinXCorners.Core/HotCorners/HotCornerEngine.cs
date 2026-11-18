@@ -1,5 +1,6 @@
 using System.Drawing;
 using WinXCorners.Core.Actions;
+using WinXCorners.Core.Input;
 using WinXCorners.Core.Model;
 
 namespace WinXCorners.Core.HotCorners;
@@ -56,12 +57,19 @@ public readonly record struct HotCornerDecision(
 /// <remarks>
 /// Differences from the original Form1.EvaluateHotCorner, all deliberate:
 /// a zero delay fires on the first qualifying sample (the original needed two); the dwell starts only
-/// once the modifier is held; a disabled custom command never counts down; and the full-screen check
-/// runs only when the dwell starts and when it is about to fire, instead of on every timer tick.
+/// once the modifier is held; a disabled, empty or invalid custom command never counts down; the
+/// full-screen check runs only when the dwell starts and when it is about to fire, instead of on every
+/// timer tick; and arming is edge-triggered (see <see cref="Reset"/>), so a pointer that is already resting
+/// in a corner when the app starts, or when settings change, does not fire that corner.
 /// </remarks>
 public sealed class HotCornerEngine
 {
     private readonly Func<string, bool>? _isBlockedByFullScreen;
+
+    // False until the pointer has been seen outside every corner since construction or Reset(). Corners only
+    // fire on entry: a pointer that was already parked in one (at start-up, or when Reset() runs because the
+    // settings changed or the session resumed) must leave first.
+    private bool _armed;
 
     private HotCornerArea _latchedArea = HotCornerArea.None;
     private Rectangle _latchedBounds = Rectangle.Empty;
@@ -88,6 +96,14 @@ public sealed class HotCornerEngine
     {
         ArgumentNullException.ThrowIfNull(settings);
 
+        var area = HotCornerGeometry.GetArea(input.Cursor, input.ScreenBounds);
+        if (area == HotCornerArea.None)
+        {
+            // Any sample outside the corners arms the engine, whatever else is going on (button held, modifier
+            // up, flyout open): entering a corner from here is a real entry.
+            _armed = true;
+        }
+
         if (_latchedArea != HotCornerArea.None)
         {
             // Measured on the bounds captured when the corner fired, so a resolution or monitor change
@@ -102,8 +118,7 @@ public sealed class HotCornerEngine
             _latchedBounds = Rectangle.Empty;
         }
 
-        var area = HotCornerGeometry.GetArea(input.Cursor, input.ScreenBounds);
-        if (!settings.HotCornersEnabled || input.Suppressed || input.AnyMouseButtonDown ||
+        if (!_armed || !settings.HotCornersEnabled || input.Suppressed || input.AnyMouseButtonDown ||
             area == HotCornerArea.None || !input.ModifierSatisfied)
         {
             ClearDwell();
@@ -111,8 +126,7 @@ public sealed class HotCornerEngine
         }
 
         var actionId = HotCornerRules.GetActionId(settings, area);
-        if (ActionCatalog.IsNoOp(actionId) ||
-            (ActionCatalog.TryGetCustomIndex(actionId, out _) && !settings.EnableCustomCommands))
+        if (ActionCatalog.IsNoOp(actionId) || IsInertCustomCommand(settings, actionId))
         {
             ClearDwell();
             return HotCornerDecision.Idle;
@@ -157,12 +171,41 @@ public sealed class HotCornerEngine
         return Decision(HotCornerOutcome.Triggered, area, actionId, TimeSpan.Zero, false);
     }
 
-    /// <summary>Forgets the dwell and the latch, e.g. after settings change or the session resumes.</summary>
+    /// <summary>
+    /// Forgets the dwell and the latch, e.g. after settings change or the session resumes, and disarms: nothing
+    /// counts down or fires until the pointer has been seen outside every corner, so a pointer still parked in a
+    /// corner does not fire it again. (The same holds for a new engine.) Entering a corner while the modifier is
+    /// not yet held does count as an entry: pressing the modifier then starts the dwell.
+    /// </summary>
     public void Reset()
     {
+        _armed = false;
         ClearDwell();
         _latchedArea = HotCornerArea.None;
         _latchedBounds = Rectangle.Empty;
+    }
+
+    /// <summary>
+    /// A custom slot that would do nothing: custom commands are off, or the slot's command is empty or invalid
+    /// (the same analysis <see cref="ActionPlanner"/> uses). Counting down for it would show a countdown that
+    /// ends in nothing.
+    /// </summary>
+    private static bool IsInertCustomCommand(ApplicationSettings settings, string actionId)
+    {
+        if (!ActionCatalog.TryGetCustomIndex(actionId, out var index))
+        {
+            return false;
+        }
+
+        if (!settings.EnableCustomCommands)
+        {
+            return true;
+        }
+
+        var commands = settings.CustomCommands;
+        var command = commands is not null && index < commands.Length ? commands[index]?.Command : null;
+        var analysis = CustomCommandAnalyzer.Analyze(command);
+        return !analysis.IsValid || analysis.Kind == CustomCommandKind.Empty;
     }
 
     private bool IsBlocked(ApplicationSettings settings, string actionId)

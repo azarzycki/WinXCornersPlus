@@ -17,7 +17,7 @@ public class HotCornerEngineTests
     private static readonly Point Center = new(960, 540);
 
     [Flags]
-    private enum F
+    public enum F
     {
         None = 0,
         Button = 1,
@@ -30,10 +30,24 @@ public class HotCornerEngineTests
     private const HotCornerOutcome Triggered = HotCornerOutcome.Triggered;
     private const HotCornerOutcome Blocked = HotCornerOutcome.BlockedByFullScreen;
 
-    /// <summary>Drives an engine through samples and records every decision.</summary>
-    private sealed class Timeline(ApplicationSettings settings, HotCornerEngine? engine = null)
+    /// <summary>
+    /// Drives an engine through samples and records every decision. Unless <paramref name="armed"/> is false, the
+    /// engine first sees one sample in the middle of the screen: corners fire on entry only, so that is where the
+    /// pointer "comes from" in every scenario below.
+    /// </summary>
+    private sealed class Timeline(ApplicationSettings settings, HotCornerEngine? engine = null, bool armed = true)
     {
-        public HotCornerEngine Engine { get; } = engine ?? new HotCornerEngine();
+        public HotCornerEngine Engine { get; } = Arm(engine ?? new HotCornerEngine(), settings, armed);
+
+        private static HotCornerEngine Arm(HotCornerEngine engine, ApplicationSettings settings, bool armed)
+        {
+            if (armed)
+            {
+                Assert.Equal(HotCornerDecision.Idle, engine.Evaluate(settings, new HotCornerInput(Center, Primary, 0, false, true, false)));
+            }
+
+            return engine;
+        }
 
         public Rectangle Screen { get; set; } = Primary;
 
@@ -167,33 +181,38 @@ public class HotCornerEngineTests
         var timeline = new Timeline(Settings());
         Assert.Equal(Triggered, timeline.At(0, BottomRight).Outcome);
 
-        // Resolution drops while the pointer is parked: (1279, 719) is the new bottom-right corner but is
-        // far outside the release zone measured on the old bounds, so it re-arms there...
-        timeline.Screen = new Rectangle(0, 0, 1280, 720);
-        Assert.Equal(Triggered, timeline.At(10, 1279, 719).Outcome);
-
-        // ...whereas a resolution change that keeps the pointer within the old zone stays latched.
+        // A resolution change that keeps the pointer within the zone measured on the old bounds stays latched...
         timeline.Screen = new Rectangle(0, 0, 1900, 1070);
-        Assert.Equal(Idle, timeline.At(20, 1899, 1069).Outcome);
+        Assert.Equal(Idle, timeline.At(10, 1899, 1069).Outcome);
         timeline.Screen = Primary;
-        Assert.Equal(Idle, timeline.At(30, 1899, 1069).Outcome);
+        Assert.Equal(Idle, timeline.At(20, 1899, 1069).Outcome);
+
+        // ...whereas after a drop to 1280x720, (1279, 719) is the new bottom-right corner but far outside the
+        // old release zone, so it re-arms there.
+        timeline.Screen = new Rectangle(0, 0, 1280, 720);
+        Assert.Equal(Triggered, timeline.At(30, 1279, 719).Outcome);
     }
 
+    /// <summary>
+    /// The release zone ends at the edge of the screen the corner fired on. Once the pointer has crossed onto the
+    /// neighbouring monitor, that monitor's adjacent corner works straight away instead of staying blocked.
+    /// </summary>
     [Fact]
-    public void Latch_KeepsUsingTriggerBoundsWhenPointerReportsAnotherScreen()
+    public void Latch_ReleasesWhenThePointerMovesOntoTheNeighbouringMonitor()
     {
         var timeline = new Timeline(Settings());
         Assert.Equal(Triggered, timeline.At(0, TopLeft).Outcome);
 
-        // The pointer slides onto the left secondary monitor's top-right corner (-1, -200). Measured on
-        // the latched primary bounds that is still inside the TopLeft zone (the zone is open towards the
-        // outside of the screen), so nothing fires.
+        // The pointer slides onto the left secondary monitor's right edge, then up into its top-right corner.
         timeline.Screen = Secondary;
-        Assert.Equal(Idle, timeline.At(10, -1, -200).Outcome);
+        Assert.Equal(Idle, timeline.At(10, -1, 0).Outcome);
+        var decision = timeline.At(20, -1, -200);
+        Assert.Equal((Triggered, HotCornerArea.TopRight), (decision.Outcome, decision.Area));
 
-        // Moving down below the zone on the secondary re-arms, and its corner then works.
-        Assert.Equal(Idle, timeline.At(20, -1, 500).Outcome);
-        Assert.Equal(Triggered, timeline.At(30, -1, -200).Outcome);
+        // Back on the primary, its top-left corner fires again on entry.
+        timeline.Screen = Primary;
+        Assert.Equal(Idle, timeline.At(30, Center).Outcome);
+        Assert.Equal(Triggered, timeline.At(40, TopLeft).Outcome);
     }
 
     [Fact]
@@ -323,7 +342,11 @@ public class HotCornerEngineTests
     [Fact]
     public void CustomAction_WithCustomCommandsDisabled_IsIdle()
     {
-        var settings = WithDelay(1, s => s.TopLeftActionId = ActionCatalog.CustomId(0));
+        var settings = WithDelay(1, s =>
+        {
+            s.TopLeftActionId = ActionCatalog.CustomId(0);
+            s.CustomCommands[0].Command = "notepad.exe";
+        });
         var timeline = new Timeline(settings);
         timeline.Expect((0, TopLeft, F.None, Idle), (600, TopLeft, F.None, Idle));
 
@@ -476,18 +499,63 @@ public class HotCornerEngineTests
     }
 
     [Fact]
-    public void Reset_ClearsDwellAndLatch()
+    public void Reset_ClearsDwellAndLatchAndDisarmsUntilThePointerLeaves()
     {
         var delayed = WithDelay(1);
         var engine = new HotCornerEngine();
         var timeline = new Timeline(delayed, engine);
         timeline.Expect((0, TopLeft, F.None, Counting));
         engine.Reset();
-        timeline.Expect((400, TopLeft, F.None, Counting), (899, TopLeft, F.None, Counting), (900, TopLeft, F.None, Triggered));
-        timeline.Expect((910, TopLeft, F.None, Idle));
 
+        // Still parked in the corner: Reset disarms, so the dwell does not start again until the pointer has left.
+        timeline.Expect((400, TopLeft, F.None, Idle), (5000, TopLeft, F.None, Idle));
+        timeline.Expect((5010, Center, F.None, Idle), (5020, TopLeft, F.None, Counting), (5519, TopLeft, F.None, Counting),
+            (5520, TopLeft, F.None, Triggered), (5530, TopLeft, F.None, Idle));
+
+        // Reset also forgets the latch: leaving the 1-pixel corner (but not the release zone) is enough afterwards.
         engine.Reset();
-        timeline.Expect((920, TopLeft, F.None, Counting));
+        timeline.Expect((5540, TopLeft, F.None, Idle), (5550, new Point(5, 5), F.None, Idle), (5560, TopLeft, F.None, Counting));
+    }
+
+    /// <summary>
+    /// The app calls Reset whenever settings change. With Lock Screen on a corner, unlocking with the pointer still
+    /// there must not lock again.
+    /// </summary>
+    [Fact]
+    public void Reset_WhileParkedInACornerThatJustFired_NeverFiresItAgainWithoutLeaving()
+    {
+        var timeline = new Timeline(Settings());
+        timeline.Expect((0, BottomRight, F.None, Triggered), (10, BottomRight, F.None, Idle));
+        timeline.Engine.Reset();
+        timeline.Expect((20, BottomRight, F.None, Idle), (30, BottomRight, F.None, Idle), (40, BottomRight, F.None, Idle));
+        timeline.Expect((50, Center, F.None, Idle), (60, BottomRight, F.None, Triggered));
+    }
+
+    [Fact]
+    public void NewEngine_PointerAlreadyRestingInACorner_DoesNotFireUntilItLeavesAndReturns()
+    {
+        var timeline = new Timeline(Settings(), armed: false);
+        timeline.Expect((0, TopLeft, F.None, Idle), (60_000, TopLeft, F.None, Idle));
+        timeline.Expect((60_010, Center, F.None, Idle), (60_020, TopLeft, F.None, Triggered));
+    }
+
+    /// <summary>Any sample outside the corners arms, even while dragging, with the modifier up or the flyout open.</summary>
+    [Theory]
+    [InlineData(F.Button)]
+    [InlineData(F.NoModifier)]
+    [InlineData(F.Suppressed)]
+    public void NewEngine_IsArmedByAnySampleOutsideTheCorners(F flags)
+    {
+        var timeline = new Timeline(Settings(), armed: false);
+        timeline.Expect((0, BottomLeft, F.None, Idle), (10, Center, flags, Idle), (20, BottomLeft, F.None, Triggered));
+    }
+
+    /// <summary>Entering a corner with the modifier up is an entry: pressing the modifier afterwards fires.</summary>
+    [Fact]
+    public void NewEngine_EnteringACornerBeforeTheModifierIsHeld_StillArmsIt()
+    {
+        var timeline = new Timeline(Settings(s => s.HotCornerModifierKey = HotCornerModifierKey.Ctrl), armed: false);
+        timeline.Expect((0, Center, F.NoModifier, Idle), (10, TopRight, F.NoModifier, Idle), (20, TopRight, F.None, Triggered));
     }
 
     [Fact]
@@ -500,7 +568,51 @@ public class HotCornerEngineTests
         blocked = false;
         timeline.Expect((10, TopLeft, F.None, Blocked));
         engine.Reset();
-        timeline.Expect((20, TopLeft, F.None, Triggered));
+        timeline.Expect((20, TopLeft, F.None, Idle), (30, Center, F.None, Idle), (40, TopLeft, F.None, Triggered));
+    }
+
+    /// <summary>
+    /// An enabled custom slot that would do nothing (no command, or one that does not parse) never counts down:
+    /// a countdown that ends in nothing would only mislead.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    [InlineData("!nosuchkey")]
+    [InlineData("#[")]
+    [InlineData("calc\u0001.exe")]
+    public void CustomAction_EmptyOrInvalidCommand_IsIdle(string? command)
+    {
+        var settings = WithDelay(1, s =>
+        {
+            s.TopLeftActionId = ActionCatalog.CustomId(0);
+            s.EnableCustomCommands = true;
+            s.ShowCountdown = true;
+            s.CustomCommands[0].Command = command!;
+        });
+        var timeline = new Timeline(settings);
+        timeline.Expect((0, TopLeft, F.None, Idle), (600, TopLeft, F.None, Idle));
+
+        settings.CustomCommands[0].Command = "!win+d";
+        timeline.Expect((700, TopLeft, F.None, Counting), (1200, TopLeft, F.None, Triggered));
+    }
+
+    [Fact]
+    public void CustomAction_MissingSlot_IsIdle()
+    {
+        var settings = Settings(s =>
+        {
+            s.TopLeftActionId = ActionCatalog.CustomId(3);
+            s.EnableCustomCommands = true;
+            s.CustomCommands = [new CustomCommandSettings { Command = "notepad.exe" }];
+        });
+        var timeline = new Timeline(settings);
+        timeline.Expect((0, TopLeft, F.None, Idle));
+        settings.CustomCommands = null!;
+        timeline.Expect((10, TopLeft, F.None, Idle));
+        settings.CustomCommands = [null!, null!, null!, null!];
+        timeline.Expect((20, TopLeft, F.None, Idle));
     }
 
     [Fact]

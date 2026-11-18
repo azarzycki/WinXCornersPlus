@@ -1,70 +1,114 @@
+using WinXCorners.Core.Platform;
+
 namespace WinXCorners.App;
 
-static class Program
+/// <summary>The entry point: runs the startup steps in order, then the tray app's message loop.</summary>
+internal static class Program
 {
-    private const string SingleInstanceMutexName = "Local\\WinXCornersPlus.SingleInstance";
-
     /// <summary>
-    ///  The main entry point for the application.
+    /// Startup sequence. Each step is security-relevant; the decisions themselves live in <see cref="Startup"/>
+    /// (and below it in Core) so they are tested without starting processes.
     /// </summary>
     [STAThread]
-    static void Main()
+    internal static int Main(string[] args)
     {
-        var settings = SettingsStore.Load();
-        if (settings.AlwaysRunAsAdministrator && !ElevationHelper.IsProcessElevated())
-        {
-            if (ElevationHelper.TryRestartElevated())
-            {
-                return;
-            }
-        }
-
-        // To customize application configuration such as set high DPI settings or default font,
-        // see https://aka.ms/applicationconfiguration.
-        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        // 1. Arguments, then WinForms defaults. DPI awareness is NOT set here: the manifest
+        //    (WinXCorners.App.manifest, <dpiAware>true/pm</dpiAware>) declares per-monitor awareness and always
+        //    wins over any SetHighDpiMode call, so the call the original made was dead and misleading (review B8).
+        //    (ApplicationConfiguration.Initialize also passes the project's default mode to SetHighDpiMode; the
+        //    manifest wins over that too.)
+        var options = CommandLineOptions.Parse(args);
         ApplicationConfiguration.Initialize();
 
-        using var singleInstanceMutex = new System.Threading.Mutex(true, SingleInstanceMutexName, out var createdNew);
-        if (!createdNew)
+        // 2. Global exception handling (review M3), before any window exists. A UI-thread exception is logged and
+        //    reported once; the tray app carries on.
+        var crashes = new CrashReporter(CrashReporter.DefaultCrashLogPath());
+        crashes.Install();
+
+        // 3. Single instance (review S4/B7). Done before loading settings or elevating, so a second launch only
+        //    asks the running copy to show Settings - it never raises a UAC prompt or a dialog of its own.
+        var outcome = Startup.AcquireSingleInstance(
+            options.RestartedFromProcessId,
+            (processId, timeout) => SingleInstance.TryAcquire(processId, timeout),
+            SignalRunningInstance,
+            out var instance);
+        if (outcome != StartupOutcome.Continue || instance is null)
         {
-            return;
+            return 0;
         }
 
-        var form = new Form1(settings);
-        Application.ApplicationExit += (_, _) => form.Dispose();
-        form.Show();
-        form.Hide();
-        Application.Run();
-    }
-}
-
-internal static class ElevationHelper
-{
-    internal static bool IsProcessElevated()
-    {
-        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
-        var principal = new System.Security.Principal.WindowsPrincipal(identity);
-        return principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
-    }
-
-    internal static bool TryRestartElevated()
-    {
+        AppHost? host = null;
+        MainForm? form = null;
         try
         {
-            var startInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = Application.ExecutablePath,
-                WorkingDirectory = AppContext.BaseDirectory,
-                UseShellExecute = true,
-                Verb = "runas"
-            };
+            // 4. Composition root: loads settings (sanitized, migrated, never discarded) and the platform services.
+            host = AppHost.Create(options);
+            crashes.AttachLog(host.Log);
 
-            System.Diagnostics.Process.Start(startInfo);
-            return true;
+            // 5. "Always run as administrator" (review S1). The only place a start raises a UAC prompt. A declined
+            //    prompt continues with normal rights. The new elevated copy waits for this one to exit before it
+            //    takes the single-instance mutex.
+            if (Startup.AutoElevate(host, Startup.DefaultPrompts.ConfirmAutoElevation) != StartupOutcome.Continue)
+            {
+                return 0;
+            }
+
+            // 6. Elevated gate (brief design point 2): approve the settings this administrator session will use.
+            //    Nothing - tray icon, raw input, actions - starts before it has passed.
+            if (Startup.PassElevatedGate(host, Startup.DefaultPrompts, instance.Release) != StartupOutcome.Continue)
+            {
+                return 0;
+            }
+
+            // 7. The tray app.
+            form = new MainForm(host);
+            RunTrayApp(form, instance, crashes, options.ShowSettings);
+            return 0;
         }
-        catch (System.ComponentModel.Win32Exception)
+        finally
         {
-            return false;
+            // Form, then host (stops the action worker), then the single instance, so a replacement process
+            // can only take over once this one has stopped acting.
+            form?.Dispose();
+            host?.Dispose();
+            instance.Dispose();
+            crashes.Uninstall();
         }
+    }
+
+    /// <summary>
+    /// Runs the message loop with an ApplicationContext and no main window (the flyout is shown from the tray icon).
+    /// MainForm ends the loop through ExitMessageLoop on its single shutdown path.
+    /// </summary>
+    private static void RunTrayApp(MainForm form, SingleInstance instance, CrashReporter crashes, bool showSettings)
+    {
+        using var context = new ApplicationContext();
+        form.ExitMessageLoop = context.ExitThread;
+        crashes.AttachNotifier(form.ShowErrorNotification);
+        instance.ActivationRequested += form.OnActivationRequested;
+        try
+        {
+            form.Start();
+            if (showSettings)
+            {
+                form.ShowSettingsWindow();
+            }
+
+            Application.Run(context);
+        }
+        finally
+        {
+            instance.ActivationRequested -= form.OnActivationRequested;
+            crashes.AttachNotifier(null);
+        }
+    }
+
+    /// <summary>Asks the running copy to open its Settings window, and lets it come to the front.</summary>
+    private static bool SignalRunningInstance()
+    {
+        // This process was started by the user, so it may hand its right to take the foreground to the running
+        // copy; without that, Windows would only flash the Settings window's taskbar button.
+        _ = NativeMethods.AllowSetForegroundWindow(NativeMethods.ASFW_ANY);
+        return SingleInstance.SignalExistingInstance();
     }
 }

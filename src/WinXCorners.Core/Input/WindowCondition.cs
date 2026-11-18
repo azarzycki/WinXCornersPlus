@@ -14,6 +14,11 @@ public enum WindowConditionScope
 /// One <c>#[class,title]</c> or <c>@[class,title]</c> condition. An empty <paramref name="ClassName"/> or
 /// <paramref name="TitleText"/> means "not specified"; at least one of them is non-empty.
 /// </summary>
+/// <remarks>
+/// The two scopes match titles differently, by design: <c>#[...]</c> matches when the foreground window's title
+/// contains <paramref name="TitleText"/>, while <c>@[...]</c> needs the exact title, because it is answered by
+/// FindWindow, which only compares whole titles.
+/// </remarks>
 public sealed record WindowCondition(WindowConditionScope Scope, string ClassName, string TitleText);
 
 /// <summary>Class name and title of a window, as read by the app.</summary>

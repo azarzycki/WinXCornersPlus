@@ -57,6 +57,8 @@ public static class LaunchPlanner
             return false;
         }
 
+        // Custom commands and links start in the user-profile folder, as the Windows Run dialog does (by design,
+        // so relative paths in a command behave the way users expect from Run); built-ins start in System32.
         var workingDirectory = request.Kind == LaunchTargetKind.BuiltIn ? directories.System32 : directories.UserProfile;
         if (!WindowsPath.IsFullyQualified(workingDirectory))
         {
@@ -65,7 +67,9 @@ public static class LaunchPlanner
         }
 
         plan = new LaunchPlan(
-            FileName: target,
+            // A built-in path is launched in the normalized form that was validated, never as given: Windows
+            // does not resolve ".." the same way for every spelling, so what was checked must be what runs.
+            FileName: request.Kind == LaunchTargetKind.BuiltIn && !IsBuiltInUri(target) ? WindowsPath.Normalize(target) : target,
             Arguments: arguments,
             WorkingDirectory: WindowsPath.Normalize(workingDirectory),
             Hidden: request.Hidden && request.Kind == LaunchTargetKind.CustomCommand,
@@ -97,13 +101,40 @@ public static class LaunchPlanner
         return flags.Count == 0 ? text : $"{text} ({string.Join(", ", flags)})";
     }
 
+    /// <summary>
+    /// An absolute https:// address with a host and no user info. User info (<c>https://github.com@evil.example/</c>)
+    /// lets the visible start of a link name a trusted site while another one loads, and a backslash is read as
+    /// <c>/</c> (<c>https://evil.example\@github.com/</c>), so both are refused.
+    /// </summary>
     internal static bool IsHttpsLink(string? url)
     {
-        return !string.IsNullOrWhiteSpace(url) &&
-               url.Trim().StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
-               Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri) &&
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return false;
+        }
+
+        var text = url.Trim();
+        return text.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
+               !text.Contains('\\') &&
+               Uri.TryCreate(text, UriKind.Absolute, out var uri) &&
                uri.Scheme == Uri.UriSchemeHttps &&
+               uri.UserInfo.Length == 0 &&
                uri.Host.Length > 0;
+    }
+
+    private static bool IsBuiltInUri(string target) =>
+        BuiltInUriSchemes.Any(scheme => target.StartsWith(scheme, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// <c>\\?\</c>, <c>\\.\</c> (with either slash) and <c>\??\</c> paths bypass Win32 path normalization, so the
+    /// lexical check could approve one spelling while Windows opens another.
+    /// </summary>
+    private static bool IsDevicePath(string target)
+    {
+        static bool IsSeparator(char c) => c is '\\' or '/';
+        return target.Length >= 4 &&
+               ((IsSeparator(target[0]) && IsSeparator(target[1]) && (target[2] is '?' or '.') && IsSeparator(target[3])) ||
+                target.StartsWith(@"\??\", StringComparison.Ordinal));
     }
 
     private static string? ValidateText(ref string target, string arguments)
@@ -137,9 +168,14 @@ public static class LaunchPlanner
             case LaunchTargetKind.Link:
                 return IsHttpsLink(target) ? null : "Links must be absolute https:// addresses.";
             case LaunchTargetKind.BuiltIn:
-                if (BuiltInUriSchemes.Any(scheme => target.StartsWith(scheme, StringComparison.OrdinalIgnoreCase)))
+                if (IsBuiltInUri(target))
                 {
                     return null;
+                }
+
+                if (IsDevicePath(target))
+                {
+                    return "Built-in targets must be plain absolute paths, not device or extended-length paths.";
                 }
 
                 // Built-ins must never be resolved through a search path (review S3).

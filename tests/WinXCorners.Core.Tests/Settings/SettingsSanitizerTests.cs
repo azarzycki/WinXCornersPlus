@@ -321,4 +321,76 @@ public class SettingsSanitizerTests
     {
         Assert.Throws<ArgumentNullException>(() => SettingsSanitizer.Sanitize(null!));
     }
+
+    [Fact]
+    public void BidirectionalControls_AreRemovedFromNameCommandAndParametersAndReported()
+    {
+        const string bidi = "\u061C\u200E\u200F\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069";
+        var command = new CustomCommandSettings
+        {
+            Name = "My" + bidi + "Tool",
+            Command = "C:\\Tools\\evil\u202Etxt.exe",
+            Parameters = "--a\u2066 b\u2069"
+        };
+        var settings = new ApplicationSettings { CustomCommands = [command, new(), new(), new()] };
+
+        var corrections = SettingsSanitizer.Sanitize(settings);
+
+        Assert.Equal("MyTool", command.Name);
+        Assert.Equal("C:\\Tools\\eviltxt.exe", command.Command);
+        Assert.Equal("--a b", command.Parameters);
+        Assert.Equal(
+        [
+            "CustomCommands[0].Name: removed 12 bidirectional control character(s).",
+            "CustomCommands[0].Command: removed 1 bidirectional control character(s).",
+            "CustomCommands[0].Parameters: removed 2 bidirectional control character(s).",
+        ], corrections);
+        Assert.Empty(SettingsSanitizer.Sanitize(settings));
+    }
+
+    [Fact]
+    public void OtherFormatCharactersAndRightToLeftLetters_AreKept()
+    {
+        // Only the bidirectional controls go; letters of right-to-left scripts and other format characters stay.
+        var command = new CustomCommandSettings { Name = "\u05D0\u05D1", Command = "a\u200Db\u00ADc" };
+        var settings = new ApplicationSettings { CustomCommands = [command, new(), new(), new()] };
+        Assert.Empty(SettingsSanitizer.Sanitize(settings));
+        Assert.Equal("a\u200Db\u00ADc", command.Command);
+    }
+
+    [Fact]
+    public void UnpairedSurrogates_AreRemovedAndPairsKept()
+    {
+        var command = new CustomCommandSettings
+        {
+            Name = "\uDC00x\uD83D\uDE00\uD800",
+            Command = "calc\uD800.exe",
+            Parameters = "\uDBFF\uDBFF\uDFFF"
+        };
+        var settings = new ApplicationSettings { CustomCommands = [command, new(), new(), new()] };
+
+        var corrections = SettingsSanitizer.Sanitize(settings);
+
+        Assert.Equal("x\uD83D\uDE00", command.Name);
+        Assert.Equal("calc.exe", command.Command);
+        Assert.Equal("\uDBFF\uDFFF", command.Parameters);
+        Assert.Equal(
+        [
+            "CustomCommands[0].Name: removed 2 unpaired surrogate(s).",
+            "CustomCommands[0].Command: removed 1 unpaired surrogate(s).",
+            "CustomCommands[0].Parameters: removed 1 unpaired surrogate(s).",
+        ], corrections);
+        Assert.Empty(SettingsSanitizer.Sanitize(settings));
+    }
+
+    [Fact]
+    public void RemovingAControlCharacterCannotLeaveAnUnpairedSurrogateBehind()
+    {
+        // Removing the NUL between the halves joins them into a valid pair, which is kept.
+        var command = new CustomCommandSettings { Command = "a\uD83D\u0000\uDE00" };
+        var settings = new ApplicationSettings { CustomCommands = [command, new(), new(), new()] };
+        Assert.Single(SettingsSanitizer.Sanitize(settings));
+        Assert.Equal("a\uD83D\uDE00", command.Command);
+        Assert.Empty(SettingsSanitizer.Sanitize(settings));
+    }
 }

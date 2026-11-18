@@ -131,6 +131,36 @@ public class SecurityPostureTests
         Assert.Contains("Task Manager", item.Detail, StringComparison.Ordinal);
     }
 
+    /// <summary>Hotkey, conditional and invalid commands open no window, so the hidden-window risk does not apply.</summary>
+    [Theory]
+    [InlineData("!win+d", false)]
+    [InlineData("#[Notepad]:(ctrl+s)", false)]
+    [InlineData("!nosuchkey", false)]
+    [InlineData("calc\u0001.exe", false)]
+    [InlineData("notepad.exe", true)]
+    [InlineData("  https://example.com  ", true)]
+    public void Evaluate_HiddenWindowRiskOnlyForCommandsThatLaunchAProgram(string command, bool reported)
+    {
+        var settings = ApplicationSettings.CreateDefault();
+        settings.EnableCustomCommands = true;
+        settings.CustomCommands[2] = new CustomCommandSettings { Command = command, LaunchHidden = true };
+        var ids = SecurityPosture.Evaluate(settings, Context()).Select(static i => i.Id);
+        Assert.Equal(reported, ids.Contains(Ids.CommandLaunchesHidden));
+    }
+
+    [Theory]
+    [InlineData(false, "To stop, exit the app and start it normally.")]
+    [InlineData(true, "To stop, turn off Always run as administrator, then exit the app and start it again.")]
+    public void Evaluate_RunningElevatedSaysHowToStopForTheCurrentSettings(bool alwaysElevated, string advice)
+    {
+        var settings = ApplicationSettings.CreateDefault();
+        settings.AlwaysRunAsAdministrator = alwaysElevated;
+        var context = new SecurityContext(true, TestData.ProtectedInstall, false, "x");
+        var item = Find(SecurityPosture.Evaluate(settings, context), Ids.RunningElevated);
+        Assert.EndsWith(advice, item.Detail, StringComparison.Ordinal);
+        Assert.InRange(item.Detail.Length, 1, SecurityPosture.MaxDetailLength);
+    }
+
     [Fact]
     public void Evaluate_ToleratesUnsanitizedSettings()
     {

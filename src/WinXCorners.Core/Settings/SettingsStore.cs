@@ -56,9 +56,6 @@ public sealed class SettingsStore
 
     private readonly TimeProvider _timeProvider;
 
-    // Exact text this store last read from or wrote to the primary file; lets Save skip no-op rewrites.
-    private string? _lastPersistedJson;
-
     // Set when the primary file holds data we could not read; saving would destroy it.
     private string? _saveBlockedReason;
 
@@ -78,7 +75,6 @@ public sealed class SettingsStore
     /// <summary>Loads settings, migrating or recovering as described by <see cref="SettingsLoadStatus"/>.</summary>
     public SettingsLoadResult Load()
     {
-        _lastPersistedJson = null;
         _saveBlockedReason = null;
         _corruptBackupPending = false;
 
@@ -86,7 +82,6 @@ public sealed class SettingsStore
         switch (primary.Kind)
         {
             case ReadKind.Parsed:
-                _lastPersistedJson = primary.Text;
                 var corrections = SettingsSanitizer.Sanitize(primary.Settings!);
                 return new SettingsLoadResult(primary.Settings!, SettingsLoadStatus.Loaded, corrections, null, null);
 
@@ -105,8 +100,8 @@ public sealed class SettingsStore
     /// <summary>
     /// Writes a sanitized copy of <paramref name="settings"/> (the argument is never modified) by writing a
     /// temp file in the same folder, flushing it to disk and renaming it over the target, so a crash or
-    /// power loss leaves either the old or the new file, never a torn one. Skips the write when the content
-    /// is identical to what was last loaded or saved.
+    /// power loss leaves either the old or the new file, never a torn one. Skips the write only when the file
+    /// on disk already holds exactly the bytes that would be written.
     /// </summary>
     public SettingsSaveResult Save(ApplicationSettings settings)
     {
@@ -131,12 +126,16 @@ public sealed class SettingsStore
             _corruptBackupPending = false;
         }
 
-        if (string.Equals(json, _lastPersistedJson, StringComparison.Ordinal))
+        // Skip the write only when the file on disk already holds exactly these bytes. Comparing with what this
+        // store last wrote would not do: another program may have changed the file since, and reporting success
+        // would then leave its content in place.
+        var bytes = StrictUtf8.GetBytes(json);
+        if (FileHasContent(Paths.PrimaryPath, bytes))
         {
             return new SettingsSaveResult(true, false, null);
         }
 
-        var error = WriteAtomically(json);
+        var error = WriteAtomically(bytes);
         return error is null
             ? new SettingsSaveResult(true, true, null)
             : new SettingsSaveResult(false, false, error);
@@ -168,7 +167,7 @@ public sealed class SettingsStore
         {
             case ReadKind.Parsed:
                 var corrections = SettingsSanitizer.Sanitize(legacy.Settings!);
-                var writeError = WriteAtomically(SettingsSerializer.Serialize(legacy.Settings!));
+                var writeError = WriteAtomically(StrictUtf8.GetBytes(SettingsSerializer.Serialize(legacy.Settings!)));
                 var error = writeError is null ? null : $"Migrated settings could not be written to {Paths.PrimaryPath}: {writeError}";
                 return new SettingsLoadResult(legacy.Settings!, SettingsLoadStatus.MigratedFromLegacy, corrections, null, error);
 
@@ -226,7 +225,7 @@ public sealed class SettingsStore
         {
             var text = StrictUtf8.GetString(buffer, 0, length);
             var settings = SettingsSerializer.Deserialize(text);
-            return new ReadOutcome(ReadKind.Parsed, text, settings);
+            return new ReadOutcome(ReadKind.Parsed, settings);
         }
         catch (DecoderFallbackException)
         {
@@ -281,7 +280,7 @@ public sealed class SettingsStore
     }
 
     /// <summary>Returns null on success, otherwise the error. Leaves no temp file behind either way.</summary>
-    private string? WriteAtomically(string json)
+    private string? WriteAtomically(byte[] content)
     {
         var targetPath = Paths.PrimaryPath;
         string? tempPath = null;
@@ -292,19 +291,40 @@ public sealed class SettingsStore
             tempPath = Path.Combine(directory, $"{Path.GetFileName(targetPath)}.{Guid.NewGuid():N}.tmp");
             using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                stream.Write(StrictUtf8.GetBytes(json));
+                stream.Write(content);
                 stream.Flush(flushToDisk: true);
             }
 
             File.Move(tempPath, targetPath, overwrite: true);
             tempPath = null;
-            _lastPersistedJson = json;
             return null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             var cleanupError = tempPath is null ? null : TryDelete(tempPath);
             return cleanupError is null ? ex.Message : $"{ex.Message} (the temporary file {tempPath} could not be removed: {cleanupError})";
+        }
+    }
+
+    /// <summary>True when <paramref name="path"/> exists and its bytes equal <paramref name="expected"/>; false when it cannot be read.</summary>
+    private static bool FileHasContent(string path, byte[] expected)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (stream.Length != expected.Length)
+            {
+                return false;
+            }
+
+            var actual = new byte[expected.Length];
+            stream.ReadExactly(actual);
+            return actual.AsSpan().SequenceEqual(expected);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Missing, locked or shrinking under us: write, and let the write report any real problem.
+            return false;
         }
     }
 
@@ -329,5 +349,5 @@ public sealed class SettingsStore
         Invalid
     }
 
-    private sealed record ReadOutcome(ReadKind Kind, string? Text = null, ApplicationSettings? Settings = null, string? Error = null);
+    private sealed record ReadOutcome(ReadKind Kind, ApplicationSettings? Settings = null, string? Error = null);
 }
