@@ -34,12 +34,10 @@ public sealed class CrashReporterInstallTests
             reporter.Uninstall();
         }
 
-        Application.OnThreadException(new InvalidOperationException("after uninstall"));
-
+        // Not raised again after Uninstall: with no handler WinForms would show its modal ThreadExceptionDialog.
         var text = File.ReadAllText(crashLog);
         Assert.Contains("first failure", text, StringComparison.Ordinal);
         Assert.Contains("second failure", text, StringComparison.Ordinal);
-        Assert.DoesNotContain("after uninstall", text, StringComparison.Ordinal);
         Assert.Equal(2, text.Split("[UI thread]").Length - 1);
         Assert.Equal([CrashReporter.NotificationText], notifications);
         Assert.Equal(2, log.Snapshot().Count(static l => l.StartsWith("Unexpected error (UI thread)", StringComparison.Ordinal)));
