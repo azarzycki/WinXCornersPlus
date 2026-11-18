@@ -1,0 +1,90 @@
+name: UI tests
+
+# Windows-only UI tests: real windows, real message loops, screenshots of every window in light and dark mode.
+on:
+  push:
+    branches: [master, 'hardening/**']
+  pull_request:
+  workflow_dispatch:
+  # Lets the release workflow run the UI tests as a gate.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-tests-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+jobs:
+  ui:
+    name: UI tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    env:
+      UI_SCREENSHOT_DIR: ${{ github.workspace }}\TestResults\screenshots
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Show OS build, session and screen
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          "OS: $($os.Caption) $($os.Version) build $([Environment]::OSVersion.Version.Build)"
+          "Session: $([System.Diagnostics.Process]::GetCurrentProcess().SessionId)  interactive: $([Environment]::UserInteractive)  user: $env:USERNAME"
+          Add-Type -AssemblyName System.Windows.Forms
+          foreach ($s in [System.Windows.Forms.Screen]::AllScreens) {
+            "Screen: $($s.DeviceName) bounds $($s.Bounds) working area $($s.WorkingArea) primary $($s.Primary)"
+          }
+          $theme = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -ErrorAction SilentlyContinue
+          "AppsUseLightTheme: $($theme.AppsUseLightTheme)"
+
+      - name: Build
+        run: dotnet build tests/WinXCorners.App.UiTests/WinXCorners.App.UiTests.csproj -c Release
+
+      - name: Test
+        run: >
+          dotnet test tests/WinXCorners.App.UiTests/WinXCorners.App.UiTests.csproj -c Release --no-build
+          --results-directory TestResults --logger "trx;LogFileName=ui.trx"
+          --logger "console;verbosity=normal" --blame-hang-timeout 10m
+
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          $trx = Get-ChildItem TestResults -Recurse -Filter *.trx | Select-Object -First 1
+          if (-not $trx) { "## UI tests (${{ matrix.os }})`n`nNo test results were produced." >> $env:GITHUB_STEP_SUMMARY; exit 0 }
+          [xml]$xml = Get-Content $trx.FullName
+          $ns = @{ t = 'http://microsoft.com/schemas/VisualStudio/TeamTest/2010' }
+          $results = Select-Xml -Xml $xml -XPath '//t:UnitTestResult' -Namespace $ns | ForEach-Object { $_.Node }
+          $passed = @($results | Where-Object outcome -eq 'Passed').Count
+          $failed = @($results | Where-Object outcome -eq 'Failed').Count
+          $skipped = @($results | Where-Object { $_.outcome -eq 'NotExecuted' }).Count
+          $shots = @(Get-ChildItem TestResults/screenshots -Filter *.png -ErrorAction SilentlyContinue).Count
+          $lines = @("## UI tests (${{ matrix.os }})", "", "| Passed | Failed | Skipped | Screenshots |", "|---|---|---|---|", "| $passed | $failed | $skipped | $shots |", "")
+          foreach ($r in $results | Where-Object { $_.outcome -eq 'NotExecuted' }) {
+            $reason = ($r.Output.StdOut, $r.Output.ErrorInfo.Message | Where-Object { $_ }) -join ' '
+            $lines += "- Skipped: $($r.testName) - $reason"
+          }
+          foreach ($r in $results | Where-Object outcome -eq 'Failed') {
+            $lines += "- Failed: $($r.testName)"
+          }
+          $lines -join "`n" >> $env:GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-test-results-${{ matrix.os }}
+          path: TestResults
+          if-no-files-found: warn

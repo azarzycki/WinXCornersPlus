@@ -79,15 +79,20 @@ internal sealed class AdvancedForm : Form
     private int _selectedCommandIndex = -1;
     private SecurityInfoForm? _securityInfo;
 
-    internal AdvancedForm(IAppHost host)
+    /// <param name="host">The platform layer.</param>
+    /// <param name="confirmRisk">Replaces <see cref="ConfirmRisk"/> from the start, so tests can prove that loading prompts nothing.</param>
+    /// <param name="showMessage">Replaces <see cref="ShowMessage"/> from the start.</param>
+    internal AdvancedForm(IAppHost host,
+        Func<IWin32Window?, string, string, IReadOnlyList<RiskItem>, string, bool>? confirmRisk = null,
+        Action<string, string>? showMessage = null)
     {
         ArgumentNullException.ThrowIfNull(host);
         _host = host;
         _workingCopy = host.Settings.Snapshot();
-        ConfirmRisk = (owner, title, heading, items, confirmText) =>
-            RiskDialog.Confirm(owner, title, heading, items, confirmText);
-        ShowMessage = (title, text) =>
-            MessageBox.Show(this, text, title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        ConfirmRisk = confirmRisk ?? ((owner, title, heading, items, confirmText) =>
+            RiskDialog.Confirm(owner, title, heading, items, confirmText));
+        ShowMessage = showMessage ?? ((title, text) =>
+            MessageBox.Show(this, text, title, MessageBoxButtons.OK, MessageBoxIcon.Warning));
         HandleCreated += (_, _) => ThemeHelper.ApplyNativeWindowTheme(Handle);
 
         Name = "advancedForm";
@@ -313,6 +318,19 @@ internal sealed class AdvancedForm : Form
             _chkLaunchHidden
         ]);
 
+        // Screen readers name an edit box or combo box after its accessible name; the captions beside them are
+        // separate labels, so the names are set here.
+        _txtCommandName.AccessibleName = "Custom command name";
+        _txtCommand.AccessibleName = "Command path or hotkey sequence";
+        _txtParameters.AccessibleName = "Parameters";
+        _cbGlobalDelay.AccessibleName = "Global delay in seconds";
+        _cbTopLeftDelay.AccessibleName = "Top Left delay in seconds";
+        _cbTopRightDelay.AccessibleName = "Top Right delay in seconds";
+        _cbBottomLeftDelay.AccessibleName = "Bottom Left delay in seconds";
+        _cbBottomRightDelay.AccessibleName = "Bottom Right delay in seconds";
+        _cbFlyoutAnimationDirection.AccessibleName = "Flyout animation direction";
+        _cbHotCornerModifierKey.AccessibleName = "Hot Corners modifier key";
+
         AcceptButton = btnOk;
         CancelButton = btnCancel;
         Controls.AddRange([updatesLink, securityLink, btnOk, _btnApply, btnCancel, topTabsHost, topSectionHost, tabsHost, customPanel]);
@@ -342,6 +360,9 @@ internal sealed class AdvancedForm : Form
 
     /// <summary>True when there are edits that have not been applied.</summary>
     internal bool HasPendingChanges => _isDirty;
+
+    /// <summary>The hand-placed layout's scaler; UI tests use it to simulate higher DPI.</summary>
+    internal UiScaling Scaling => _scaling;
 
     internal void PositionNearTaskbarTray()
     {

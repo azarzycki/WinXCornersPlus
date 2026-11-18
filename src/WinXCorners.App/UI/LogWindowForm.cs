@@ -39,6 +39,7 @@ internal sealed class LogWindowForm : Form
         _logText = new TextBox
         {
             Name = "logTextBox",
+            AccessibleName = "Runtime events",
             Multiline = true,
             ScrollBars = ScrollBars.Vertical,
             ReadOnly = true,

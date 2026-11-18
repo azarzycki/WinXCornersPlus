@@ -184,10 +184,10 @@ internal sealed class SecurityInfoForm : Form
         AddSection("Right now", first: false);
         AddText($"Running as administrator: {YesNo(context.IsElevated)}", width, "elevatedLabel");
         AddText("Program folder:", width, null, bottom: px(2));
-        AddValueBox(Show(context.Install.Directory), width, "programFolderBox");
+        AddValueBox(Show(context.Install.Directory), width, "programFolderBox", "Program folder");
         AddText(context.Install.Explanation, width, "installExplanationLabel");
         AddText("Settings file:", width, null, bottom: px(2));
-        AddValueBox(Show(context.SettingsPath), width, "settingsPathBox");
+        AddValueBox(Show(context.SettingsPath), width, "settingsPathBox", "Settings file");
         AddText($"Starts with Windows: {YesNo(context.StartsWithWindows)}", width, "startsWithWindowsLabel");
 
         AddSection("Things to know", first: false);
@@ -249,11 +249,12 @@ internal sealed class SecurityInfoForm : Form
 
     // Paths go in a read-only text box rather than a label: a label cannot break a path that has no spaces,
     // and the user may want to select and copy it.
-    private void AddValueBox(string text, int width, string name)
+    private void AddValueBox(string text, int width, string name, string accessibleName)
     {
         var box = new TextBox
         {
             Name = name,
+            AccessibleName = accessibleName,
             Text = text,
             ReadOnly = true,
             BorderStyle = BorderStyle.None,

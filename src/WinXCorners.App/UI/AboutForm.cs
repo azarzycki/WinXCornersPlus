@@ -54,14 +54,28 @@ internal sealed class AboutForm : Form
             ForeColor = ThemeHelper.Colors.GetForegroundColor()
         };
 
-        var descriptionLabel = new Label
+        // The version and the credits are separate labels, each sized to its text. (The original single label
+        // held nine lines in a 72 px box: the copyright line and two duplicate URLs were always cut off.)
+        var versionLabel = new Label
         {
-            Name = "descriptionLabel",
-            Text = $"Version: {DisplayText.ForDisplay(host.VersionText, 40)}\r\n\r\nCreated by Adam Kamienski\r\nOriginally developed by vhanla\r\n\r\n© 2026 Asteski, 2019 - 2024 vhanla\r\n\r\nhttps://github.com/Asteski\r\nhttps://github.com/vhanla",
+            Name = "versionLabel",
+            Text = $"Version: {DisplayText.ForDisplay(host.VersionText, 40)}",
             AutoSize = false,
             UseMnemonic = false,
             Location = new Point(20, 48),
-            Size = new Size(190, 72),
+            Size = new Size(190, 16),
+            BackColor = Color.Transparent,
+            ForeColor = ThemeHelper.Colors.GetForegroundColor()
+        };
+
+        var creditsLabel = new Label
+        {
+            Name = "creditsLabel",
+            Text = "Created by Adam Kamienski\r\nOriginally developed by vhanla",
+            AutoSize = false,
+            UseMnemonic = false,
+            Location = new Point(20, 78),
+            Size = new Size(190, 32),
             BackColor = Color.Transparent,
             ForeColor = ThemeHelper.Colors.GetForegroundColor()
         };
@@ -100,7 +114,8 @@ internal sealed class AboutForm : Form
         _toolTip.SetToolTip(settingsPathLabel, shownPath);
 
         Controls.Add(titleLabel);
-        Controls.Add(descriptionLabel);
+        Controls.Add(versionLabel);
+        Controls.Add(creditsLabel);
         Controls.Add(githubAsteskiLink);
         Controls.Add(githubVhanlaLink);
         Controls.Add(elevatedLabel);
@@ -109,6 +124,12 @@ internal sealed class AboutForm : Form
         _scaling = new UiScaling(this);
         _scaling.Apply();
     }
+
+    /// <summary>The hand-placed layout's scaler; UI tests use it to simulate higher DPI.</summary>
+    internal UiScaling Scaling => _scaling;
+
+    /// <summary>Holds the full settings path for the shortened path label.</summary>
+    internal ToolTip PathToolTip => _toolTip;
 
     protected override void OnHandleCreated(EventArgs e)
     {
