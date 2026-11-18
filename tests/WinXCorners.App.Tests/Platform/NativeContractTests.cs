@@ -19,6 +19,7 @@ public sealed class NativeContractTests
     public void Struct_sizes_match_the_Windows_SDK_for_this_process_bitness()
     {
         _output.WriteLine(TestEnvironment.Describe());
+        // Pointer size, not "x64": the same layout applies to native ARM64 processes.
         var x64 = IntPtr.Size == 8;
         Assert.Equal(16, Marshal.SizeOf<NativeMethods.RECT>());
         Assert.Equal(40, Marshal.SizeOf<NativeMethods.MONITORINFO>());

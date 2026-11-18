@@ -67,6 +67,9 @@ public sealed class ActionExecutorTests : IDisposable
         Assert.True(_executor.WhenIdle().Wait(Wait), "The action did not finish.");
     }
 
+    /// <summary>The key, direction and extended flag (the pacing delay is Core's business).</summary>
+    private static (ushort VirtualKey, bool KeyUp, bool Extended) Key(KeyEvent e) => (e.VirtualKey, e.KeyUp, e.Extended);
+
     private IReadOnlyList<KeyEvent> SingleSend()
     {
         Assert.Single(_keys.Sent);
@@ -123,9 +126,9 @@ public sealed class ActionExecutorTests : IDisposable
         Run(actionId);
 
         var events = SingleSend();
-        Assert.Equal(new KeyEvent(VkLeftWin, false, true, KeyEventPlanner.DefaultDelayMs), events[0]);
+        Assert.Equal((VkLeftWin, false, true), Key(events[0]));
         Assert.Contains(events, e => e.VirtualKey == key && !e.KeyUp);
-        Assert.Equal(new KeyEvent(VkLeftWin, true, true, KeyEventPlanner.DefaultDelayMs), events[^1]);
+        Assert.Equal((VkLeftWin, true, true), Key(events[^1]));
     }
 
     [Fact]
@@ -155,8 +158,8 @@ public sealed class ActionExecutorTests : IDisposable
         Assert.True(events[0].KeyUp && events[1].KeyUp);
         Assert.Equal(new HashSet<ushort> { VkRightControl, VkLeftShift }, new HashSet<ushort> { events[0].VirtualKey, events[1].VirtualKey });
         Assert.True(events.Single(e => e.VirtualKey == VkRightControl).Extended);
-        Assert.Equal(new KeyEvent(VkA, false, false, KeyEventPlanner.DefaultDelayMs), events[2]);
-        Assert.Equal(new KeyEvent(VkA, true, false, KeyEventPlanner.DefaultDelayMs), events[3]);
+        Assert.Equal((VkA, false, false), Key(events[2]));
+        Assert.Equal((VkA, true, false), Key(events[3]));
     }
 
     [Fact]

@@ -26,6 +26,9 @@ internal sealed class SingleInstance : IDisposable
     internal const string DefaultMutexName = @"Local\WinXCornersPlus.SingleInstance";
     internal const string DefaultActivationEventName = @"Local\WinXCornersPlus.Activate";
 
+    /// <summary>Upper bound for an activation callback still running when Release is called.</summary>
+    private static readonly TimeSpan UnregisterTimeout = TimeSpan.FromSeconds(2);
+
     private Mutex? _mutex;
     private EventWaitHandle? _activationEvent;
     private RegisteredWaitHandle? _activationWait;
@@ -128,7 +131,17 @@ internal sealed class SingleInstance : IDisposable
     public void Release()
     {
         var wait = Interlocked.Exchange(ref _activationWait, null);
-        wait?.Unregister(null);
+        if (wait is not null)
+        {
+            // Unregister(null) returns at once while the thread pool still holds the event handle, so the named
+            // event outlived Release and a launch in that window "signalled" a copy that no longer listens (found on
+            // Windows CI). Waiting for the unregistration also guarantees no ActivationRequested after Release.
+            using var unregistered = new ManualResetEvent(false);
+            if (wait.Unregister(unregistered))
+            {
+                unregistered.WaitOne(UnregisterTimeout);
+            }
+        }
 
         var activationEvent = Interlocked.Exchange(ref _activationEvent, null);
         activationEvent?.Dispose();

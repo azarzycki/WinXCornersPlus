@@ -56,7 +56,7 @@ public sealed class ProcessLauncherTests : IDisposable
         Assert.NotNull(text);
         Assert.EndsWith(Path.GetFileName(_temp.Path), text.Trim().TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
         Assert.NotNull(Poll.WaitForFile(_temp.File("relative.txt"), ChildTimeout));
-        Assert.Contains(_log.Snapshot(), line => line.StartsWith("Launched ", StringComparison.Ordinal));
+        Assert.Contains(_log.Snapshot(), line => line.Contains("] Launched ", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public sealed class ProcessLauncherTests : IDisposable
         { "relative built-in", new LaunchRequest("cmd.exe", "/c echo x> refused.txt", false, LaunchTargetKind.BuiltIn) },
         { "built-in outside Windows", new LaunchRequest(@"C:\Users\Public\cmd.exe", string.Empty, false, LaunchTargetKind.BuiltIn) },
         { "device path built-in", new LaunchRequest(@"\\?\C:\Windows\System32\cmd.exe", string.Empty, false, LaunchTargetKind.BuiltIn) },
-        { "control character", new LaunchRequest("cmd.exe", "/c echo x> refused.txt\n", false, LaunchTargetKind.CustomCommand) },
+        { "control character", new LaunchRequest("cmd.exe", "/c echo x\u0007> refused.txt", false, LaunchTargetKind.CustomCommand) },
         { "quote in target", new LaunchRequest("cmd.exe\" /c echo x> refused.txt", string.Empty, false, LaunchTargetKind.CustomCommand) },
         { "empty target", new LaunchRequest("   ", string.Empty, false, LaunchTargetKind.CustomCommand) },
     };
@@ -104,7 +104,7 @@ public sealed class ProcessLauncherTests : IDisposable
 
         Thread.Sleep(500);
         Assert.False(File.Exists(_temp.File("refused.txt")), "A refused request started a process.");
-        Assert.Contains(_log.Snapshot(), line => line.StartsWith("Launch refused:", StringComparison.Ordinal));
+        Assert.Contains(_log.Snapshot(), line => line.Contains("] Launch refused:", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -117,7 +117,7 @@ public sealed class ProcessLauncherTests : IDisposable
 
         Assert.False(launched);
         Assert.False(string.IsNullOrWhiteSpace(error));
-        Assert.Contains(_log.Snapshot(), line => line.StartsWith("Launch failed:", StringComparison.Ordinal));
+        Assert.Contains(_log.Snapshot(), line => line.Contains("] Launch failed:", StringComparison.Ordinal));
     }
 
     public static TheoryData<string> RequestKinds => new() { "built-in", "custom", "link", "settings" };

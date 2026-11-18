@@ -42,13 +42,48 @@ public sealed class ExecutableSmokeTests
                 .FirstOrDefault();
     }
 
-    private static Process Start(string exe, string workingDirectory)
+    private Process Start(string exe, string workingDirectory, string name)
     {
-        return Process.Start(new ProcessStartInfo(exe)
+        var process = Process.Start(new ProcessStartInfo(exe)
         {
             UseShellExecute = false,
-            WorkingDirectory = workingDirectory
+            WorkingDirectory = workingDirectory,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true
         })!;
+        process.ErrorDataReceived += (_, e) => Record(name, e.Data);
+        process.OutputDataReceived += (_, e) => Record(name, e.Data);
+        process.BeginErrorReadLine();
+        process.BeginOutputReadLine();
+        return process;
+    }
+
+    private readonly List<string> _childOutput = [];
+
+    private void Record(string name, string? line)
+    {
+        if (line is not null)
+        {
+            lock (_childOutput)
+            {
+                _childOutput.Add($"[{name}] {line}");
+            }
+        }
+    }
+
+    private void WriteDiagnostics()
+    {
+        lock (_childOutput)
+        {
+            _childOutput.ForEach(_output.WriteLine);
+        }
+
+        var crashLog = CrashReporter.DefaultCrashLogPath();
+        if (File.Exists(crashLog))
+        {
+            _output.WriteLine("crash.log:");
+            _output.WriteLine(File.ReadAllText(crashLog));
+        }
     }
 
     private static void KillTree(Process? process)
@@ -90,10 +125,10 @@ public sealed class ExecutableSmokeTests
         Process? second = null;
         try
         {
-            first = Start(exe, temp.Path);
+            first = Start(exe, temp.Path, "first");
             Assert.False(first.WaitForExit(5_000), $"The first copy exited after start with code {SafeExitCode(first)}.");
 
-            second = Start(exe, temp.Path);
+            second = Start(exe, temp.Path, "second");
             Assert.True(second.WaitForExit(10_000), "The second copy did not exit within 10 s.");
             Assert.Equal(0, second.ExitCode);
 
@@ -103,6 +138,7 @@ public sealed class ExecutableSmokeTests
         {
             KillTree(second);
             KillTree(first);
+            WriteDiagnostics();
         }
     }
 

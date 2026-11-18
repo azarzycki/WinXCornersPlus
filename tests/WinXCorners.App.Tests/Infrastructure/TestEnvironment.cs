@@ -47,6 +47,6 @@ internal static class TestEnvironment
     internal static string Describe()
     {
         return $"Windows build {Environment.OSVersion.Version.Build}, {(IsElevated ? "elevated" : "not elevated")}, " +
-               $"{(Environment.Is64BitProcess ? "64" : "32")}-bit process, user interactive: {Environment.UserInteractive}";
+               $"{System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture} process, user interactive: {Environment.UserInteractive}";
     }
 }

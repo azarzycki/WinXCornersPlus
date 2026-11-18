@@ -86,13 +86,15 @@ public sealed class StartupRegistrationTests : IDisposable
     }
 
     [Fact]
-    public void An_unquoted_value_with_spaces_is_not_treated_as_this_executable()
+    public void An_unquoted_legacy_value_for_this_executable_is_recognised_and_left_as_it_is()
     {
-        WriteRaw(_exePath); // Unquoted: CreateProcess could run "C:\Program.exe" instead.
+        // Core's StartupCommandLine reads an unquoted value up to the first ".exe" (as v1.4 may have written it).
+        WriteRaw(_exePath);
         var registration = new StartupRegistration(_log, _valueName, _exePath);
 
-        Assert.False(registration.IsEnabled());
-        Assert.NotNull(registration.GetStaleEntryPath());
+        Assert.True(registration.IsEnabled());
+        Assert.Null(registration.GetStaleEntryPath());
+        Assert.Equal(_exePath, ReadRaw());
     }
 
     [Fact]

@@ -230,8 +230,8 @@ public sealed class AppHostTests : IDisposable
         host.OpenLink(url);
 
         var log = host.Log.Snapshot();
-        Assert.Contains(log, line => line.StartsWith("Link not opened", StringComparison.Ordinal));
-        Assert.DoesNotContain(log, line => line.StartsWith("Launching", StringComparison.Ordinal));
+        Assert.Contains(log, line => line.Contains("] Link not opened", StringComparison.Ordinal));
+        Assert.DoesNotContain(log, line => line.Contains("] Launching", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -265,7 +265,7 @@ public sealed class AppHostTests : IDisposable
         var host = Create(options: Options("--bogus\u202E", "--no-elevate"));
 
         Assert.True(host.Options.NoElevate);
-        var line = Assert.Single(host.Log.Snapshot(), l => l.StartsWith("Ignored command-line argument", StringComparison.Ordinal));
+        var line = Assert.Single(host.Log.Snapshot(), l => l.Contains("] Ignored command-line argument", StringComparison.Ordinal));
         Assert.DoesNotContain('\u202E', line);
     }
 

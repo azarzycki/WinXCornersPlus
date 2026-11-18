@@ -14,7 +14,11 @@ $ErrorActionPreference = 'Stop'
 $lines = [System.Collections.Generic.List[string]]::new()
 $lines.Add("### $Title")
 $os = [Environment]::OSVersion.Version
-$lines.Add("Windows build $($os.Build) ($os)")
+$osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+$processArch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+# The tests run in the dotnet host's process; its runtime identifier gives that process's architecture.
+$rid = (& dotnet --info 2>$null | Select-String -Pattern '^\s*RID:\s*(\S+)' | Select-Object -First 1).Matches.Groups[1].Value
+$lines.Add("Windows build $($os.Build) ($os); OS architecture $osArch; dotnet host RID $rid (test process architecture); summary process $processArch")
 
 $trxFiles = @(Get-ChildItem -Path $ResultsDirectory -Recurse -Filter '*.trx' -ErrorAction SilentlyContinue)
 if ($trxFiles.Count -eq 0) {

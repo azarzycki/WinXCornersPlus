@@ -40,7 +40,7 @@ public sealed class CrashReporterInstallTests
         Assert.Contains("second failure", text, StringComparison.Ordinal);
         Assert.Equal(2, text.Split("[UI thread]").Length - 1);
         Assert.Equal([CrashReporter.NotificationText], notifications);
-        Assert.Equal(2, log.Snapshot().Count(static l => l.StartsWith("Unexpected error (UI thread)", StringComparison.Ordinal)));
+        Assert.Equal(2, log.Snapshot().Count(static l => l.Contains("] Unexpected error (UI thread)", StringComparison.Ordinal)));
     }
 }
 

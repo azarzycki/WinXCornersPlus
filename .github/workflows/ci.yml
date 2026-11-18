@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, windows-11-arm, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -57,7 +57,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2022, windows-2025]
+        os: [windows-2022, windows-2025, windows-11-arm]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -68,7 +68,8 @@ jobs:
         run: |
           $v = [Environment]::OSVersion.Version
           $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')
-          Write-Host "Windows build $($v.Build) ($v); administrator: $elevated"
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+          Write-Host "Windows build $($v.Build) ($v); process architecture: $arch; administrator: $elevated"
       - name: Build app (Release, warnings are errors)
         run: dotnet build src/WinXCorners.App/WinXCorners.App.csproj -c Release -warnaserror
       - name: Test
